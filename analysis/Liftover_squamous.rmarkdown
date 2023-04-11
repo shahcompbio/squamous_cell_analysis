@@ -34,7 +34,9 @@ library(reticulate)
 setwd("/work/shah/users/Mobina/")
 ```
 
+
 #Run Azimuth
+
 
 ```{r}
 # To see available refs
@@ -42,7 +44,9 @@ available_data <- AvailableData()
 available_data[grep("Azimuth", available_data[,3]), 1:3]
 ```
 
+
 #load data
+
 
 ```{r}
 seurat_data<-LoadH5Seurat(file = "/work/shah/users/Mobina/Project_Squamous/Squamousdata/Final_data.h5seurat")
@@ -55,13 +59,17 @@ seurat_data<-seurat_data[,rownames(adata_Full)]
 seurat_data <- RunAzimuth(seurat_data, reference = "lungref")
 ```
 
+
 #Merge datasets
+
 
 ```{r}
 adata_Full$obs<-merge(adata_Full$obs,seurat_data@meta.data[,c(4,seq(8,20))],by="index")
 ```
 
+
 #Save metadata
+
 
 ```{r}
 seurat_data@meta.data %>%
@@ -72,30 +80,32 @@ seurat_data@meta.data %>%
 # R.utils::gzip("sclc_lungref_azimuth_refmapped.txt", overwrite = TRUE)
 ```
 
+
 #Compare the results
+
 
 ```{r}
 Compare_genevector_level3<-adata_Full$obs %>% group_by(predicted.ann_level_3,genevector) %>% count()
 Compare_leiden_level3<-adata_Full$obs %>% group_by(predicted.ann_level_3,leiden) %>% count()
 ```
 
+
 #Load infercnv results
+
 
 ```{r}
 infer_cnv<-read.delim("/work/shah/users/Mobina/squamous_cell_analysis/cnv/infercnv/infercnv_results.txt")
 with(infer_cnv, table(is_tumor_cell, cell_type))
 ```
 
+
 #Merge data with infercnv esults
+
 
 ```{r}
 infer_cnv$index<-infer_cnv$cell_id
 adata_Full$obs<-merge(adata_Full$obs,infer_cnv[,3:8],by="index")
-a<-with(adata_Full$obs, table(is_tumor_cell, genevector))
-
-a<-as.data.frame(a)
-ggplot(a, aes(fill=is_tumor_cell, y=Freq, x=genevector)) + 
-    geom_bar(position="dodge", stat="identity")
+with(adata_Full$obs, table(is_tumor_cell, genevector))
 
 ```
 
@@ -103,7 +113,9 @@ ggplot(a, aes(fill=is_tumor_cell, y=Freq, x=genevector)) +
 with(adata_Full$obs, table(is_tumor_cell, leiden))
 ```
 
+
 #update lables
+
 
 ```{r}
 adata_Full$obs$leiden<-as.character(adata_Full$obs$leiden)
@@ -116,14 +128,18 @@ adata_Full$obs$genevector_updated[(which(adata_Full$obs$genevector=="Cancer" & a
 with(adata_Full$obs, table(is_tumor_cell, leiden))
 ```
 
+
 #Save the final adata to load in python for the other analysis
+
 
 ```{r}
 4779+13+6+40+7+136+171
-#write_h5ad(adata_Full, "/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_liftover_output.h5ad")
+write_h5ad(adata_Full, "/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_liftover_output.h5ad")
 ```
 
+
 #Do a plot and save out
+
 
 ```{r}
 #| fig-width: 8
@@ -159,44 +175,11 @@ dev.off()
 
 ```
 
-Filter the h5ad file and update the cell types
+
+cleanup lung to save ram
+
+
 ```{r}
-adata_Full_complete<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_subtype_output.h5ad")
-adata_Full_complete$obs$genevector_updated<-as.character(adata_Full_complete$obs$genevector_updated)
-adata_Full_complete$obs$leiden<-as.character(adata_Full_complete$obs$leiden)
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$predicted.ann_level_4=="Plasmacytoid DCs")]="Plasmacytoid_DCs"
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$leiden=="1_Myeloid")]="B Cell"
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$leiden=="4_Myeloid")]="B Cell"
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$leiden=="2_Myeloid")]="Mast Cell"
-
-adata_Full_complete$obs$predicted.ann_level_3<-as.character(adata_Full_complete$obs$predicted.ann_level_3)
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$leiden=="3_Myeloid")]=adata_Full_complete$obs$predicted.ann_level_3[which(adata_Full_complete$obs$leiden=="3_Myeloid")]
-
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$leiden=="0_Myeloid")]=adata_Full_complete$obs$predicted.ann_level_3[which(adata_Full_complete$obs$leiden=="0_Myeloid")]
-
-adata_Full_complete$obs$genevector_updated[which(adata_Full_complete$obs$leiden=="5_Myeloid")]=adata_Full_complete$obs$predicted.ann_level_3[which(adata_Full_complete$obs$leiden=="5_Myeloid")]
-
-adata_Full_complete$obs$genevector_updated<-gsub(pattern ="B Cell" ,replacement ="B_Cell" ,x =adata_Full_complete$obs$genevector_updated )
-
-adata_Full_complete$obs$genevector_updated<-gsub(pattern ="B cell lineage" ,replacement ="B_Cell" ,x =adata_Full_complete$obs$genevector_updated )
-
-adata_Full_complete$obs$genevector_updated<-gsub(pattern =" " ,replacement ="_" ,x =adata_Full_complete$obs$genevector_updated )
-
-adata_Full_complete$obs$genevector_updated<-gsub(pattern ="T_cell_lineage" ,replacement ="T_Cell" ,x =adata_Full_complete$obs$genevector_updated )
-
-adata_Full_complete$obs$genevector_updated<-gsub(pattern ="Mast_cells" ,replacement ="Mast_Cell" ,x =adata_Full_complete$obs$genevector_updated )
-
-adata_Full_complete$obs$genevector_updated<-gsub(pattern ="Fibroblasts" ,replacement ="Fibroblast" ,x =adata_Full_complete$obs$genevector_updated )
-
-Frequency_clusters<-as.data.frame(table(adata_Full_complete$obs$genevector_updated))
-
-#Remove unkown and everything with less than 20 cells
-adata_Full_complete<-adata_Full_complete[which(adata_Full_complete$obs$genevector_updated !="Unknown")]
-
-Frequency_clusters<-as.data.frame(table(adata_Full_complete$obs$genevector_updated))
-
-adata_Full_complete<-adata_Full_complete[adata_Full_complete$obs$genevector_updated %in% Frequency_clusters$Var1[which(Frequency_clusters$Freq>20)]]
-
-write_h5ad(adata_Full_complete, "/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_subtype_output_filtered.h5ad")
-write_h5ad(adata_Full_complete, "/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_subtype_output_filtered_with_Unknown.h5ad")
+rm(seurat_data)
 ```
+
