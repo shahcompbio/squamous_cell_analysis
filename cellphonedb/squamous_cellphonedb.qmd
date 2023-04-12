@@ -246,19 +246,30 @@ df<-df_no_filter
 
 heatmap
 ```{r}
-df_heatmap<-df %>% group_by(celltype_pair) %>% count()
+df_heatmap <-df %>% group_by(celltype_pair) %>% summarise(Count = n_distinct(id_cp_interaction))  
+
   df_heatmap$cellA <- str_split(df_heatmap$celltype_pair, pattern = "\\.", simplify = TRUE)[,1]
   df_heatmap$cellB <- str_split(df_heatmap$celltype_pair, pattern = "\\.", simplify = TRUE)[,2]
   
-  colnames(df_heatmap)[2]<-"count"
   
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Heatmap_significant.pdf"))  
 ggplot(df_heatmap, aes(x =cellA ,
                          y = cellB,
-                         fill = count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
+                         fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
   ggtitle("Heatmap_significant")  
 dev.off()
 
+```
+```{r}
+
+df_heatmap_no_cancer_cancer<-df_heatmap[-which(df_heatmap$cellA=="Cancer"&df_heatmap$cellB=="Cancer"),]
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Heatmap_significant_no_cancer_cancer.pdf"))  
+ggplot(df_heatmap_no_cancer_cancer, aes(x =cellA ,
+                         y = cellB,
+                         fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
+  ggtitle("Heatmap_significant")  
+dev.off()
 ```
 
 
@@ -270,16 +281,31 @@ df_heatmap_myeloid<-df_heatmap[which(df_heatmap$cellA=="Cancer"|df_heatmap$cellA
 df_heatmap_myeloid<-df_heatmap_myeloid[which(df_heatmap_myeloid$cellB=="Cancer"|df_heatmap_myeloid$cellB=="Dendritic_cells"|df_heatmap_myeloid$cellB=="Macrophages"|df_heatmap_myeloid$cellB=="Mast_Cell"|df_heatmap_myeloid$cellB=="Monocytes"|df_heatmap_myeloid$cellB=="Plasmacytoid_DCs"),]
 
 df_heatmap_myeloid<-df_heatmap_myeloid[which(df_heatmap_myeloid$cellA=="Cancer"|df_heatmap_myeloid$cellB=="Cancer"),]
-df_heatmap_myeloid<-df_heatmap_myeloid[-which(df_heatmap_myeloid$cellA=="Cancer"&df_heatmap_myeloid$cellB=="Cancer"),]
+#df_heatmap_myeloid<-df_heatmap_myeloid[-which(df_heatmap_myeloid$cellA=="Cancer"&df_heatmap_myeloid$cellB=="Cancer"),]
+
+for(i in 1:nrow(df_heatmap_myeloid)){
+  if(df_heatmap_myeloid$cellA[i]!="Cancer"){
+    df_heatmap_myeloid$Celltype[i]<-df_heatmap_myeloid$cellA[i]
+  }
+   else if(df_heatmap_myeloid$cellA[i]=="Cancer"){
+    df_heatmap_myeloid$Celltype[i]<-df_heatmap_myeloid$cellB[i]
+  }
+}
+df_heatmap_myeloid$celltype_pair <- factor(df_heatmap_myeloid$celltype_pair, levels = df_heatmap_myeloid$celltype_pair[order(df_heatmap_myeloid$Celltype)])
+
+p<-ggplot(df_heatmap_myeloid, aes(x=celltype_pair, y=Count,fill=Celltype)) +
+  geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90)) 
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/barplot_Myeloid_Cancer.pdf"))
+p
+dev.off()
 
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Heatmap_Myeloid_Cancer.pdf"))
 ggplot(df_heatmap_myeloid, aes(x =cellA ,
                          y = cellB,
-                         fill = count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
+                         fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
   ggtitle("Heatmap_Myeloid_Cancer")  
 
-dev.off()
+#dev.off()
 
 
 ```
@@ -290,13 +316,14 @@ df<-df[which(df$cellA=="Cancer"|df$cellA=="Dendritic_cells"|df$cellA=="Macrophag
 df<-df[which(df$cellB=="Cancer"|df$cellB=="Dendritic_cells"|df$cellB=="Macrophages"|df$cellB=="Mast_Cell"|df$cellB=="Monocytes"|df$cellB=="Plasmacytoid_DCs"),]
 
 df<-df[which(df$cellA=="Cancer"|df$cellB=="Cancer"),]
-df<-df[-which(df$cellA=="Cancer"&df$cellB=="Cancer"),]
+#df<-df[-which(df$cellA=="Cancer"&df$cellB=="Cancer"),]
 
 #df_sigmeans_greater_1<-df[which(df$sigmeans>1),]
+colnames(df)[which(colnames(df)=="count_each_LR_per_interaction_overal")]<-"Count_patients"
 
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot.pdf"),width = 19,height = 90)
 ggplot(data = df, aes(celltype_pair, interacting_pair, 
-                                      colour = median_sigmeans, size = count_each_LR_per_interaction_overal )) + 
+                                      colour = median_sigmeans, size = Count_patients )) + 
   geom_point() +
   scale_color_gradient(low = "blue", high = "red") +
   theme_bw() + 
@@ -310,11 +337,11 @@ dev.off()
 ```
 Look at LR pairs that are present in all the patients
 ```{r}
-df_all_patients<-df %>% filter(count_each_LR_per_interaction_overal==length(unique(df$sample_name)))
+df_all_patients<-df %>% filter(Count_patients==length(unique(df$sample_name)))
 
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_present_in_all_patients.pdf"),width = 19,height = 15)
 ggplot(data = df_all_patients, aes(celltype_pair, interacting_pair, 
-                                      colour = median_sigmeans, size = count_each_LR_per_interaction_overal )) + 
+                                      colour = median_sigmeans, size = Count_patients )) + 
   geom_point() +
   scale_color_gradient(low = "blue", high = "red") +
   theme_bw() + 
@@ -328,7 +355,7 @@ dev.off()
 ```
 Look at patient specific LR pairs
 ```{r}
-df_patient_specific<-df %>% filter(count_each_LR_per_interaction_overal==1)
+df_patient_specific<-df %>% filter(Count_patients==1)
 
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_patient_specific.pdf"),width = 19,height = 40)
 ggplot(data = df_patient_specific, aes(celltype_pair, interacting_pair, 
@@ -363,12 +390,12 @@ dev.off()
 
 present in more than 5 patient
 ```{r}
-df_5_patient<-df %>% filter(count_each_LR_per_interaction_overal>=5)
+df_5_patient<-df %>% filter(Count_patients>=5)
 
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_5_patient.pdf"),width = 19,height = 40)
 ggplot(data = df_5_patient, aes(celltype_pair, interacting_pair, 
-                                      colour = median_sigmeans)) + 
-  geom_point(size=5) +
+                                      colour = median_sigmeans,size=Count_patients)) + 
+  geom_point() +
   scale_color_gradient(low = "blue", high = "red") +
   theme_bw() + 
   ylab("") + 
@@ -386,10 +413,12 @@ Yonit receptor of interest LILRB family
 ```{r}
 df_LILRB<-df_no_filter[grep(pattern = "LILRB",x = df_no_filter$gene_b),]
 
+colnames(df_LILRB)[which(colnames(df_LILRB)=="count_each_LR_per_interaction_overal")]<-"Count_patients"
+
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_ILRB_family.pdf"),width = 19,height = 10)
 ggplot(data = df_LILRB, aes(celltype_pair, interacting_pair, 
-                                      colour = median_sigmeans )) + 
-  geom_point(size = 5) +
+                                      colour = median_sigmeans,size=Count_patients )) + 
+  geom_point() +
   scale_color_gradient(low = "blue", high = "red") +
   theme_bw() + 
   ylab("") + 
@@ -405,8 +434,8 @@ df_LILRB<-df[grep(pattern = "LILRB",x = df$gene_b),]
 
 pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_ILRB_family_cancer_myeloid.pdf"),width = 15,height = 10)
 ggplot(data = df_LILRB, aes(celltype_pair, interacting_pair, 
-                                      colour = median_sigmeans )) + 
-  geom_point(size = 5) +
+                                      colour = median_sigmeans,size=Count_patients )) + 
+  geom_point() +
   scale_color_gradient(low = "blue", high = "red") +
   theme_bw() + 
   ylab("") + 
