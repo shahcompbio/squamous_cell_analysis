@@ -1,0 +1,451 @@
+---
+title: "Squamous cellphonedb"
+author: "Mobina Kazemi"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: false
+embed-resources: true
+---
+
+
+```{r setup}
+library(tidyverse)
+library(glue)
+library(ggh4x)
+library(here)
+```
+
+#Read adata for the squamous project
+```{r}
+adata_Full<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_cellphonedb.h5ad")
+rownames(adata_Full$obs)<-adata_Full$obs$index
+```
+
+#cellphonedb #split data into seperate sample data
+
+```{R,warning=F}
+Sample_cell_frequency<-table(adata_Full$obs$orig.ident)
+Sample_cell_frequency<-as.data.frame(Sample_cell_frequency)
+adata_Full_metadata <- split(adata_Full$obs, f = adata_Full$obs$orig.ident)  
+adata_Full_list<-list()
+for(i in 1:nrow(Sample_cell_frequency)){
+  adata_Full_list[[i]]<-adata_Full[rownames(adata_Full_metadata[[i]]),]
+  dir.create(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample",Sample_cell_frequency$Var1[i]))
+  write_h5ad(anndata = adata_Full_list[[i]],filename=paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".h5ad"))
+a<-adata_Full_list[[i]]$obs[,c("index","celltype")]
+write.table(x = a,file = paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".tsv"),quote = F,row.names = F,sep = "\t")
+  }
+```
+
+#Analyzng cellphonedb results #results pvals,means,decon,sigmenas data
+
+
+```{r}
+sample_dirs <- list.dirs("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/", recursive = F)
+
+```
+
+
+```{r}
+df_list <- lapply(seq_along(sample_dirs), function(i) {
+  
+  sample_name <- basename(sample_dirs[i])
+  samp_dir <- sample_dirs[i]
+  
+  logger::log_info("Processing sample {i} of {length(sample_dirs)}: {sample_name}")
+
+  sigmeans <- read.table(file = file.path(samp_dir, "significant_means.txt"), header = T, sep = "\t")
+  
+  data_cols <- colnames(sigmeans)[(which(colnames(sigmeans) == "rank")+1):ncol(sigmeans)]
+
+  df <- pivot_longer(sigmeans, cols = all_of(data_cols), names_to = "celltype_pair", values_to = "sigmeans")
+  
+
+  cell_counts <- table(read.table(file = file.path(samp_dir, glue("{sample_name}.tsv")), header = T, sep = "\t", comment.char = "")$celltype) %>% 
+    as.data.frame()
+  
+  df$cellA <- str_split(df$celltype_pair, pattern = "\\.", simplify = TRUE)[,1]
+  df$cellB <- str_split(df$celltype_pair, pattern = "\\.", simplify = TRUE)[,2]
+  
+  df$total_sample_cellcount <- sum(cell_counts$Freq)
+  
+  df <- df %>%
+    dplyr::left_join(cell_counts, by = c("cellA" = "Var1")) %>%
+    left_join(cell_counts, by = c("cellB" = "Var1")) %>%
+    rename("cellA_count" = "Freq.x", "cellB_count" = "Freq.y") %>%
+    mutate(cellA_frac = cellA_count / total_sample_cellcount,
+           cellB_frac = cellB_count / total_sample_cellcount,
+           sample_name = gsub("Sample", "", sample_name),
+           is_sig = ifelse(!is.na(sigmeans), "sig", "ns"))
+  
+  return(df)
+})
+
+df <- do.call("rbind", df_list)
+```
+
+
+## QC
+
+```{r, fig.width=11, fig.height=7}
+#facet_nested(~response+sample_name, scales = "free", space = "free")
+p <- df %>%
+  distinct(sample_name, cellA, cellA_count) %>%
+  ggplot(aes(x = cellA, y = cellA_count)) +
+  geom_col() +
+  facet_wrap(~sample_name) +
+  guides(x = guide_axis(angle = 90))
+
+p
+```
+
+```{r, fig.width=11, fig.height=7}
+#facet_nested(~response+sample_name, scales = "free", space = "free")
+p <- df %>%
+  distinct(sample_name, cellB, cellB_count) %>%
+  ggplot(aes(x = cellB, y = cellB_count,fill="Red")) +
+  geom_col() +
+  facet_wrap(~sample_name) +
+  guides(x = guide_axis(angle = 90))
+
+p
+```
+
+
+save the original df
+```{r}
+df_original<-df
+df<-df_original
+```
+
+look at the distribution of fractions
+```{r}
+p1=ggplot(df, aes(x=cellA_frac)) + 
+    geom_histogram(aes(y=after_stat(density)),      # Histogram with density instead of count on y-axis
+                   binwidth=0.01,
+                   colour="black", fill="white") +
+    geom_density(alpha=.2, fill="#FF6666")+scale_y_sqrt()
+
+p2=ggplot(df, aes(x=cellB_frac)) + 
+    geom_histogram(aes(y=after_stat(density)),      # Histogram with density instead of count on y-axis
+                   binwidth=0.01,
+                   colour="black", fill="white") +
+    geom_density(alpha=.2, fill="#FF6666")+scale_y_sqrt()
+
+
+
+
+p1+p2
+
+```
+
+```{r}
+p1=ggplot(df, aes(x=cellA_count)) + 
+    geom_histogram(aes(y=after_stat(density)),      # Histogram with density instead of count on y-axis
+                   binwidth=0.01,
+                   colour="black", fill="white") 
+p2=ggplot(df, aes(x=cellB_count)) + 
+    geom_histogram(aes(y=after_stat(density)),      # Histogram with density instead of count on y-axis
+                   binwidth=0.01,
+                   colour="black", fill="white")
+
+
+
+
+p1+p2
+
+```
+
+filter only significant values
+```{r}
+df<-df[which(df$is_sig=="sig"),]
+```
+
+
+Set per sample and cell-type count thresholds
+
+```{r}
+sample_min_cell_count <- 0
+celltype_min_cell_count <- 30
+celltype_min_cell_frac <- 0.1
+
+df <- df %>% 
+  mutate(sample_pass = ifelse(total_sample_cellcount >= sample_min_cell_count, T, F),
+         cellA_pass = ifelse(cellA_count >= celltype_min_cell_count, T, F),
+         cellB_pass = ifelse(cellB_count >= celltype_min_cell_count, T, F),
+         cellA_pass_frac = ifelse(cellA_frac >= celltype_min_cell_frac, T, F),
+         cellB_pass_frac = ifelse(cellB_frac >= celltype_min_cell_frac, T, F))
+```
+
+
+Assess impact of filters on per sample and per cell type basis
+
+```{r}
+with(df, signif(prop.table(table(sample_name, cellA_pass), margin = 1)))
+```
+```{r}
+with(df, signif(prop.table(table(sample_name, cellB_pass), margin = 1)))
+```
+
+```{r}
+with(df, signif(prop.table(table(sample_name, cellA_pass_frac), margin = 1)))
+```
+
+```{r}
+with(df, signif(prop.table(table(sample_name, cellB_pass_frac), margin = 1)))
+```
+
+
+count number of reported lr pair for each sample for each cell cell inetraction 
+
+```{r}
+df <- df %>%
+  distinct(id_cp_interaction,sample_name, celltype_pair) %>%
+  group_by(sample_name) %>% 
+  count(celltype_pair,name="count_LR_pair_per_sample_per_interaction") %>% 
+  right_join(df,by=c("sample_name","celltype_pair"))
+
+```
+
+Assess which cell types (or cell type pairs) have enough cells across enough patients in each group to make comparisons.
+
+```{r}
+
+```
+
+
+
+
+## Final Results
+
+Count per response group the number of significant interactions per L-R pair
+
+```{r}
+df<- df %>%
+  group_by( celltype_pair, id_cp_interaction) %>%
+  count(name = "count_each_LR_per_interaction_overal")%>%
+  right_join(df,by=c("id_cp_interaction","celltype_pair"))
+```
+
+```{r}
+df<-df %>% group_by(id_cp_interaction,celltype_pair) %>% mutate(median_sigmeans=median(sigmeans))
+```
+
+save data
+```{r}
+df_no_filter<-df
+df<-df_no_filter
+```
+
+
+heatmap
+```{r}
+df_heatmap <-df %>% group_by(celltype_pair) %>% summarise(Count = n_distinct(id_cp_interaction))  
+
+  df_heatmap$cellA <- str_split(df_heatmap$celltype_pair, pattern = "\\.", simplify = TRUE)[,1]
+  df_heatmap$cellB <- str_split(df_heatmap$celltype_pair, pattern = "\\.", simplify = TRUE)[,2]
+  
+  
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Heatmap_significant.pdf"))  
+ggplot(df_heatmap, aes(x =cellA ,
+                         y = cellB,
+                         fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
+  ggtitle("Heatmap_significant")  
+dev.off()
+
+```
+```{r}
+
+df_heatmap_no_cancer_cancer<-df_heatmap[-which(df_heatmap$cellA=="Cancer"&df_heatmap$cellB=="Cancer"),]
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Heatmap_significant_no_cancer_cancer.pdf"))  
+ggplot(df_heatmap_no_cancer_cancer, aes(x =cellA ,
+                         y = cellB,
+                         fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
+  ggtitle("Heatmap_significant")  
+dev.off()
+```
+
+
+only myeloids and cancers interactions
+```{r}
+
+df_heatmap_myeloid<-df_heatmap[which(df_heatmap$cellA=="Cancer"|df_heatmap$cellA=="Dendritic_cells"|df_heatmap$cellA=="Macrophages"|df_heatmap$cellA=="Mast_Cell"|df_heatmap$cellA=="Monocytes"|df_heatmap$cellA=="Plasmacytoid_DCs"),]
+
+df_heatmap_myeloid<-df_heatmap_myeloid[which(df_heatmap_myeloid$cellB=="Cancer"|df_heatmap_myeloid$cellB=="Dendritic_cells"|df_heatmap_myeloid$cellB=="Macrophages"|df_heatmap_myeloid$cellB=="Mast_Cell"|df_heatmap_myeloid$cellB=="Monocytes"|df_heatmap_myeloid$cellB=="Plasmacytoid_DCs"),]
+
+df_heatmap_myeloid<-df_heatmap_myeloid[which(df_heatmap_myeloid$cellA=="Cancer"|df_heatmap_myeloid$cellB=="Cancer"),]
+#df_heatmap_myeloid<-df_heatmap_myeloid[-which(df_heatmap_myeloid$cellA=="Cancer"&df_heatmap_myeloid$cellB=="Cancer"),]
+
+for(i in 1:nrow(df_heatmap_myeloid)){
+  if(df_heatmap_myeloid$cellA[i]!="Cancer"){
+    df_heatmap_myeloid$Celltype[i]<-df_heatmap_myeloid$cellA[i]
+  }
+   else if(df_heatmap_myeloid$cellA[i]=="Cancer"){
+    df_heatmap_myeloid$Celltype[i]<-df_heatmap_myeloid$cellB[i]
+  }
+}
+df_heatmap_myeloid$celltype_pair <- factor(df_heatmap_myeloid$celltype_pair, levels = df_heatmap_myeloid$celltype_pair[order(df_heatmap_myeloid$Celltype)])
+
+p<-ggplot(df_heatmap_myeloid, aes(x=celltype_pair, y=Count,fill=Celltype)) +
+  geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90)) 
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/barplot_Myeloid_Cancer.pdf"))
+p
+dev.off()
+
+
+ggplot(df_heatmap_myeloid, aes(x =cellA ,
+                         y = cellB,
+                         fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
+  ggtitle("Heatmap_Myeloid_Cancer")  
+
+#dev.off()
+
+
+```
+dotplot over all pairs no filter
+```{r}
+df<-df[which(df$cellA=="Cancer"|df$cellA=="Dendritic_cells"|df$cellA=="Macrophages"|df$cellA=="Mast_Cell"|df$cellA=="Monocytes"|df$cellA=="Plasmacytoid_DCs"),]
+
+df<-df[which(df$cellB=="Cancer"|df$cellB=="Dendritic_cells"|df$cellB=="Macrophages"|df$cellB=="Mast_Cell"|df$cellB=="Monocytes"|df$cellB=="Plasmacytoid_DCs"),]
+
+df<-df[which(df$cellA=="Cancer"|df$cellB=="Cancer"),]
+#df<-df[-which(df$cellA=="Cancer"&df$cellB=="Cancer"),]
+
+#df_sigmeans_greater_1<-df[which(df$sigmeans>1),]
+colnames(df)[which(colnames(df)=="count_each_LR_per_interaction_overal")]<-"Count_patients"
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot.pdf"),width = 19,height = 90)
+ggplot(data = df, aes(celltype_pair, interacting_pair, 
+                                      colour = median_sigmeans, size = Count_patients )) + 
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Dotplot_cancer_myeloid_interactions")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size=20))
+
+
+dev.off()
+```
+Look at LR pairs that are present in all the patients
+```{r}
+df_all_patients<-df %>% filter(Count_patients==length(unique(df$sample_name)))
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_present_in_all_patients.pdf"),width = 19,height = 15)
+ggplot(data = df_all_patients, aes(celltype_pair, interacting_pair, 
+                                      colour = median_sigmeans, size = Count_patients )) + 
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Dotplot_cancer_myeloid_interactions_present_in_all_patients")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size=20))
+
+
+dev.off()
+```
+Look at patient specific LR pairs
+```{r}
+df_patient_specific<-df %>% filter(Count_patients==1)
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_patient_specific.pdf"),width = 19,height = 40)
+ggplot(data = df_patient_specific, aes(celltype_pair, interacting_pair, 
+                                      colour = sigmeans,alpha=sample_name)) + 
+  geom_point(size=5) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Dotplot_cancer_myeloid_interactions_patient_specific")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+dev.off()
+
+
+
+
+# pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_patient_specific.pdf"),width = 19,height = 90)
+# df %>% group_by(sample_name) %>% ggplot(aes(celltype_pair, interacting_pair, 
+#                                       colour = median_sigmeans)) + 
+#   geom_point() +
+#   scale_color_gradient(low = "blue", high = "red") +
+#   theme_bw() + 
+#   ylab("") + 
+#   xlab("") + 
+#   ggtitle("Dotplot_cancer_myeloid_interactions_patient_specific")+
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+facet_wrap(~sample_name,nrow = 2)
+# 
+# dev.off()
+```
+
+present in more than 5 patient
+```{r}
+df_5_patient<-df %>% filter(Count_patients>=5)
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_5_patient.pdf"),width = 19,height = 40)
+ggplot(data = df_5_patient, aes(celltype_pair, interacting_pair, 
+                                      colour = median_sigmeans,size=Count_patients)) + 
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Dotplot_cancer_myeloid_interactions_patient_specific")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size=20))
+
+
+dev.off()
+```
+
+
+Yonit receptor of interest LILRB family
+
+```{r}
+df_LILRB<-df_no_filter[grep(pattern = "LILRB",x = df_no_filter$gene_b),]
+
+colnames(df_LILRB)[which(colnames(df_LILRB)=="count_each_LR_per_interaction_overal")]<-"Count_patients"
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_ILRB_family.pdf"),width = 19,height = 10)
+ggplot(data = df_LILRB, aes(celltype_pair, interacting_pair, 
+                                      colour = median_sigmeans,size=Count_patients )) + 
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Dotplot_LILRB Family")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 10),axis.text.y = element_text(size = 15))
+
+
+dev.off()
+
+
+df_LILRB<-df[grep(pattern = "LILRB",x = df$gene_b),]
+
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/dotplot_ILRB_family_cancer_myeloid.pdf"),width = 15,height = 10)
+ggplot(data = df_LILRB, aes(celltype_pair, interacting_pair, 
+                                      colour = median_sigmeans,size=Count_patients )) + 
+  geom_point() +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Dotplot_LILRB Family")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1,size = 20),axis.text.y = element_text(size = 15))
+
+
+dev.off()
+
+```
+
+
