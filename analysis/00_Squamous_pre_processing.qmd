@@ -1,0 +1,310 @@
+---
+title: "Squamous project"
+format: html
+date: "`r Sys.Date()`"
+author: "Mobina Kazemi"
+execute:
+  cache: false
+editor: visual  
+---
+
+```{r setup}
+#| output: false
+library(codetools)
+library(survival)
+library(Seurat)
+library(SeuratDisk)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(devtools)
+library(cowplot)
+library(stringr)
+library(reticulate)
+setwd("/work/shah/users/Mobina/")
+```
+
+#Pre processing and making the final seurat data from raw counts and metadata
+
+```{r}
+list<-list.files(path = "readcounts.mtx",pattern = ".mtx",full.names=T)
+patient_names<-unlist(strsplit(unlist(strsplit(x = list,split = "/"))[seq(2,18,2)],"_sparse_read_counts.mtx"))
+Data_preparation<-function(patient_name){
+  dir.create(patient_name)
+  file.copy(from = paste0("barcodes.csv/",patient_name,"_sparse_counts_barcodes.csv"),to =patient_name )
+  file.copy(from = paste0("genes.csv/",patient_name,"_sparse_counts_genes.csv"),to =patient_name )
+  file.copy(from = paste0("readcounts.mtx/",patient_name,"_sparse_read_counts.mtx"),to =patient_name )
+ file.rename(list.files(patient_name, pattern = "*barcodes.csv", full.names = TRUE),to =paste0(patient_name,"/barcodes.tsv"))
+ file.rename(list.files(patient_name, pattern = "*genes.csv", full.names = TRUE),to =paste0(patient_name,"/genes.tsv"))
+ file.rename(list.files(patient_name, pattern = "*counts.mtx", full.names = TRUE),to =paste0(patient_name,"/matrix.mtx"))
+  barcodes<-read.delim(paste0(patient_name,"/barcodes.tsv"),sep = ",",header = F)
+  write.table(barcodes,file =paste0(patient_name,"/barcodes.tsv") ,quote = F,row.names = F,col.names = F)
+  genes<-read.delim(paste0(patient_name,"/genes.tsv"),sep = ",",header = F)
+  write.table(genes,file =paste0(patient_name,"/genes.tsv") ,quote = F,row.names = F,col.names = F)
+  mtx<-read.delim(paste0(patient_name,"/matrix.mtx"),sep=" ",header = F,skip = 2)
+  mtx<-mtx[,c(2,1,3)]
+  a<-matrix(data=0,nrow = 2,ncol = 3)
+  a[1,1]<-"%%MatrixMarket matrix coordinate integer general"
+  a[2,1]<-"%"
+  a[1,2:3]=a[2,2:3]=""
+  colnames(a)<-colnames(mtx)
+  mtx<-rbind(a,mtx)
+  write.table(mtx,file =paste0(patient_name,"/matrix.mtx") ,quote = F,row.names = F,col.names = F)
+}
+
+
+Data<-list()
+Seurat<-list()
+for (i in patient_names) {
+  Data_preparation(i)
+  Data[[i]]<- Read10X(data.dir = i,gene.column =2,cell.column = 2 )
+  a<-read.csv(file =paste0(i,"/barcodes.tsv" ),sep = "",header = F)
+  colnames(Data[[i]])<-as.character(a[,2])
+  #assign(i, CreateSeuratObject(counts = a, project = i) )
+  Seurat[[i]]<-CreateSeuratObject(counts = Data[[i]], project = i)
+  SaveH5Seurat(b,paste0("Seurat_objects/",i))
+
+}
+
+setwd("Seurat_objects/")
+list_seurat_old<-list.files(path = ".",pattern = "*",full.names=T)
+list_seurat_new<-gsub("_","-",list_seurat_old)
+file.rename(list_seurat_old,list_seurat_new)
+list_seurat<-list.files(path = ".",pattern = "*",full.names=T)
+paste0(patient_names,collapse = ",")
+paste0(list_seurat,collapse = ",")
+file.rename(from = "_","-")
+
+
+seurat_data <- merge(Seurat[["3587_YL-1540_1174a_IGO_12437_AB_8"]], y = c(Seurat[["3588_YL-1540_1151a_IGO_12437_AB_9"]],Seurat[["3589_YL-1540_1291a_IGO_12437_AB_10"]],Seurat[["3590_YL-1540_1200a_IGO_12437_AB_11"]],Seurat[["3594_YL-1556_1332_IGO_12437_AB_17"]],Seurat[["3595_YL-1556_1514_IGO_12437_AB_18"]],Seurat[["3596_YL-1556_1525_IGO_12437_AB_19"]],Seurat[["3597_YL-1556_1589_IGO_12437_AB_20"]],Seurat[["3598_YL-1556_1588_IGO_12437_AB_21"]]),add.cell.ids = c("3587_YL-1540_1174a_IGO_12437_AB_8","3588_YL-1540_1151a_IGO_12437_AB_9","3589_YL-1540_1291a_IGO_12437_AB_10","3590_YL-1540_1200a_IGO_12437_AB_11","3594_YL-1556_1332_IGO_12437_AB_17","3595_YL-1556_1514_IGO_12437_AB_18","3596_YL-1556_1525_IGO_12437_AB_19","3597_YL-1556_1589_IGO_12437_AB_20","3598_YL-1556_1588_IGO_12437_AB_21"), project = "Squamous")
+SaveH5Seurat(seurat_data,"Seurat_objects/Final_data")
+seurat_data[c("CD3D", "TCL1A", "MS4A1"), 1:30]
+```
+
+#Load data
+
+```{r}
+seurat_data<- LoadH5Seurat(file = "Project_Squamous/Squamousdata/Final_data.h5seurat")
+
+seurat_data<-seurat_data[,(which(seurat_data$orig.ident!="3590_YL-1540_1200a_IGO_12437_AB_11"))]
+seurat_data[["old.ident"]] <- Idents(object = seurat_data)
+
+
+dim(seurat_data)
+```
+
+#QC analysis
+
+```{r}
+Idents(object = seurat_data)[1:5]
+levels(x = seurat_data)[1:5]
+
+VlnPlot(seurat_data, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+plot1 <- FeatureScatter(seurat_data, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(seurat_data, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+seurat_data_tibble<-seurat_data %>%  as_tibble()
+ggplot(data = seurat_data_tibble,aes(x = nCount_RNA,y = nFeature_RNA))+geom_point()
+
+a <- CalculateBarcodeInflections(seurat_data,   barcode.column = "nCount_RNA",group.column = "orig.ident")
+#BarcodeInflectionsPlot(a)
+#Remove cells based on rank plot
+seurat_data<-seurat_data[,a@tools$CalculateBarcodeInflections$cells_pass]
+```
+
+#Remove doublets####Didnt work
+
+```{r}
+#source("Project_Squamous/Rcode/scrublet_doubletDetection.R")
+#b<-runScrublet(seurat_data)
+Convert("Project_Squamous/Squamousdata/Final_data.h5seurat", dest = "h5ad")
+```
+
+#Remove MT
+
+```{r}
+seurat_data[["percent.mt"]] <- PercentageFeatureSet(seurat_data, pattern = "^MT-")
+head(seurat_data@meta.data, 5)
+FeatureScatter(seurat_data, feature1 = "nCount_RNA", feature2 = "percent.mt")
+FeatureScatter(seurat_data, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+seurat_data_tibble<-seurat_data %>%  as_tibble()
+ggplot(seurat_data, aes(x=percent.mt,color=old.ident)) +
+geom_density(adjust = 1/5)+ylim(0,5)+xlim(0,10)
+
+VlnPlot(seurat_data, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+seurat_data <- subset(seurat_data, subset = nFeature_RNA > 200 & percent.mt < 35)
+
+seurat_data <- subset(seurat_data, subset = nFeature_RNA > 200 &percent.mt < 35)
+```
+
+#Convert to python
+
+```{r}
+SaveH5Seurat(seurat_data, filename = "Project_Squamous/Squamousdata/seurat_data_withQC_1200removed.h5Seurat")
+Convert("Project_Squamous/Squamousdata/seurat_data_withQC_1200removed.h5Seurat", dest = "h5ad")
+```
+
+#Normalization and find highy variable genes
+
+```{r}
+seurat_data <- NormalizeData(seurat_data, normalization.method = "LogNormalize", scale.factor = 10000)
+###Find variable genes####
+#they are highly expressed in some cells, and lowly expressed in others
+seurat_data <- FindVariableFeatures(seurat_data, selection.method = "vst", nfeatures = 4500)
+
+seurat_data[["RNA"]][[]]["CD3E",]
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(seurat_data), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(seurat_data)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+```
+
+#Scaling the data
+
+```{r}
+#No need to do scaling do.scale = FALSE
+all.genes <- rownames(seurat_data)
+seurat_data <- ScaleData(seurat_data, features = all.genes,do.scale = FALSE,do.center = FALSE)
+```
+
+#PCA
+
+```{r}
+head(seurat_data[["RNA"]][[]]) #Gene metadata
+head(seurat_data[[]]) #Cell metadata
+seurat_data <- RunPCA(seurat_data, features = VariableFeatures(object = seurat_data))
+print(seurat_data[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(seurat_data, dims = 1:2, reduction = "pca")
+DimPlot(seurat_data, reduction = "pca")
+DimHeatmap(seurat_data, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+####Determine dimentionality of the dataset
+
+```{r}
+seurat_data <- JackStraw(seurat_data, num.replicate = 100)
+seurat_data <- ScoreJackStraw(seurat_data, dims = 1:20)
+JackStrawPlot(seurat_data, dims = 1:15)
+ElbowPlot(seurat_data)
+```
+
+#Cluster finding
+
+```{r}
+seurat_data <- FindNeighbors(seurat_data, dims = 1:10)
+seurat_data <- FindClusters(seurat_data, resolution = 0.2)
+```
+
+#Umap
+
+```{r}
+seurat_data <- RunUMAP(seurat_data, dims = 1:10)
+DimPlot(seurat_data, reduction = "umap",group.by = "RNA_snn_res.0.2")
+DimPlot(seurat_data, reduction = "umap",group.by = "orig.ident")
+```
+
+####Cluster Biomarkers
+
+```{r}
+cluster2.markers <- FindMarkers(seurat_data, ident.1 = 2, min.pct = 0.25)
+head(cluster2.markers, n = 5)
+seurat_data.markers <- FindAllMarkers(seurat_data, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+seurat_data.markers_20<-seurat_data.markers %>%
+group_by(cluster) %>%
+slice_max(n = 20, order_by = avg_log2FC)
+
+seurat_data.markers_10<-seurat_data.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 10, order_by = avg_log2FC)
+
+VlnPlot(seurat_data, features = c("FOXP3","CTLA4","IL7R","LEF1","SELL","CD4","CD45"))
+VlnPlot(seurat_data, features = c("MS4A1", "CD79A"), slot = "counts", log = TRUE)
+
+FeaturePlot(seurat_data, features = c("CD79A","CD79B","BANK1","MS4A1","CD19"))
+
+seurat_data.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(seurat_data, features = top10$gene) + NoLegend()
+
+RidgePlot(seurat_data, features =c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCGR3A", "LYZ", "PPBP","CD8A") , ncol = 2)
+
+DotPlot(seurat_data, features = unique(seurat_data.markers_10$gene)) + RotatedAxis()
+DotPlot(seurat_data, features = c("CD3E","LYZ","AIF1")) + RotatedAxis()
+FeaturePlot(seurat_data, features = seurat_data.markers_10$gene, blend = TRUE)
+DoHeatmap(seurat_data, features = unique(seurat_data.markers_10$gene), size = 4,
+         angle = 90) + NoLegend()
+
+
+seurat_data.markers_40<-seurat_data.markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 40, order_by = avg_log2FC)
+#write.table(x =seurat_data.markers_40 ,file = "Project_Squamous/Results/markers_40.txt",quote = F,row.names = T,col.names = T)
+
+View(seurat_data[["RNA"]][[]])
+
+FeaturePlot(seurat_data, features = c("CD3E","PTPRC"),blend=T)
+```
+
+#Furthur analysis
+
+```{r}
+VlnPlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "CD3\\D$",x =seurat_data.markers_40$gene)]))
+FeaturePlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "CD3\\D$",x =seurat_data.markers_40$gene)]))
+VlnPlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "KRT*",x =seurat_data.markers_40$gene)]))
+FeaturePlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "KRT*",x =seurat_data.markers_40$gene)]))
+VlnPlot(seurat_data, features = c("KRT19","TP63","SOX2","EPCAM"))
+FeaturePlot(seurat_data, features = c("TP63","SOX2","EPCAM"))
+VlnPlot(seurat_data, features = c("TYROBP","AIF1","CST3","LYZ"))
+FeaturePlot(seurat_data, features = c("TYROBP","AIF1","CST3","LYZ"))
+VlnPlot(seurat_data, features = c("MS4A1","CD79A","BANK1","CD79B","CD19"))
+FeaturePlot(seurat_data, features = c("MS4A1","CD79A","BANK1","CD79B","CD19"))
+VlnPlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "HLA*",x =seurat_data.markers_40$gene)]))
+FeaturePlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "HLA*",x =seurat_data.markers_40$gene)]))
+VlnPlot(seurat_data, features = c("MZB1","JCHAIN","DERL3"))
+FeaturePlot(seurat_data, features = c("MZB1","JCHAIN","DERL3"))
+VlnPlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "IGH*",x =seurat_data.markers_40$gene)]))
+#FeaturePlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "GH*",x =seurat_data.markers_40$gene)]))
+VlnPlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "IGLC*",x =seurat_data.markers_40$gene)]))
+FeaturePlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "IGLC*",x =seurat_data.markers_40$gene)]))
+VlnPlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "COL*",x =seurat_data.markers_40$gene)]))
+FeaturePlot(seurat_data, features =  unique(seurat_data.markers_40$gene[grep(pattern = "COL*",x =seurat_data.markers_40$gene)]))
+VlnPlot(seurat_data, features = c("CALD1","SPARC"))
+FeaturePlot(seurat_data, features = c("CALD1","SPARC"))
+VlnPlot(seurat_data, features = c("GZMH","GZMK","CXCL13","IFNG","GPR183","KLRC2"))
+FeaturePlot(seurat_data, features = c("GZMH","GZMK","CXCL13","IFNG","GPR183","KLRC2"))
+VlnPlot(seurat_data, features = c("IRF7","IRF4","GZMB","TCF4"))
+FeaturePlot(seurat_data, features = c("IRF7","IRF4","GZMB","TCF4"))
+
+VlnPlot(seurat_data, features = c("CSF1R","SOX2","TP63"))
+FeaturePlot(seurat_data, features = c("CSF1R","SOX2","TP63"))
+VlnPlot(seurat_data, features = c("CD11B","ITGAM","DAP","TREM1","TREM2","CD45","KLRC2"))
+FeaturePlot(seurat_data, features =  c("CD11B","ITGAM","DAP","TREM1","TREM2","CD45","KLRC2"))
+
+
+celltype <- c(
+  "0"="T-cell",
+  "1"="T-cell or Denderitic",
+  "2"="B-cell",
+  "3"="T-cell or Myeloid or Denderitic",
+  "4"="Myeloid",
+  "5"="Cancer",
+  "6"="Fibroblast or Endothelial",
+  "7"="B-cell or Denderitic",
+  "8"="Plasma",
+  "9"="Myeloid or Plasma",
+  "10"="Cancer or Plasma"
+)
+
+seurat_data$cell_type<-celltype[as.factor(seurat_data$RNA_snn_res.0.2)]
+plot1<-DimPlot(seurat_data, reduction = "umap",group.by = "RNA_snn_res.0.2")
+plot2<-DimPlot(seurat_data, reduction = "umap",group.by = "cell_type")
+plot3<-ggplot(seurat_data@meta.data) +geom_bar(aes(x = cell_type), fill = 'blue')+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ggtitle(paste0("Total cell count: ",nrow(seurat_data@meta.data)))+coord_flip()
+plot4<-ggplot(seurat_data@meta.data) +geom_bar(aes(x = orig.ident), fill = 'blue')+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+coord_flip()
+plot5<-ggplot(seurat_data@meta.data) +geom_bar(aes(x = orig.ident,fill=cell_type))+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+coord_flip()
+plot_grid(plot1,plot2,plot3,plot4,plot5, labels = c("A.", "B.","C.","D.","E."), label_size = 12,ncol = 1)
+```
