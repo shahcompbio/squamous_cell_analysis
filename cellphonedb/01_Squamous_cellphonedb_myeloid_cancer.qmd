@@ -24,14 +24,19 @@ library(here)
 #Read adata for the squamous project
 ```{r}
 adata_Full<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_myeloid_Cancer_cellphonedb.h5ad")
+
+adata_Full<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops.h5ad)
+
+
+
 rownames(adata_Full$obs)<-adata_Full$obs$index
 ```
 
 #celltype frequency
 ```{r}
-a<-as.data.frame(with(adata_Full$obs, signif(table(orig.ident, celltype))))
+a<-as.data.frame(with(adata_Full$obs, signif(table(orig.ident, genevector_l2))))
 
-ggplot(a, aes(x=orig.ident, y=Freq,fill=celltype)) +
+ggplot(a, aes(x=orig.ident, y=Freq,fill=genevector_l2)) +
   geom_bar(stat="identity",position=position_dodge())+ theme(axis.text.x = element_text(angle = 90))+ ggtitle("Sample-Celltype-Frequency")+xlab("Celltype")  
 
 ```
@@ -39,6 +44,8 @@ ggplot(a, aes(x=orig.ident, y=Freq,fill=celltype)) +
 #cellphonedb #split data into seperate sample data
 
 ```{R,warning=F}
+adata_Full<-adata_Full[adata_Full$obs$genevector_l2 %in% c("Macrophage","Dendritic","Monocyte","pDC","Cancer")]
+
 Sample_cell_frequency<-table(adata_Full$obs$orig.ident)
 Sample_cell_frequency<-as.data.frame(Sample_cell_frequency)
 adata_Full_metadata <- split(adata_Full$obs, f = adata_Full$obs$orig.ident)  
@@ -47,7 +54,7 @@ for(i in 1:nrow(Sample_cell_frequency)){
   adata_Full_list[[i]]<-adata_Full[rownames(adata_Full_metadata[[i]]),]
   dir.create(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Sample",Sample_cell_frequency$Var1[i]))
   write_h5ad(anndata = adata_Full_list[[i]],filename=paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".h5ad"))
-a<-adata_Full_list[[i]]$obs[,c("index","celltype")]
+a<-adata_Full_list[[i]]$obs[,c("index","genevector_l2")]
 write.table(x = a,file = paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".tsv"),quote = F,row.names = F,sep = "\t")
   }
 ```
@@ -76,7 +83,7 @@ df_list <- lapply(seq_along(sample_dirs), function(i) {
   df <- pivot_longer(sigmeans, cols = all_of(data_cols), names_to = "celltype_pair", values_to = "sigmeans")
   
 
-  cell_counts <- table(read.table(file = file.path(samp_dir, glue("{sample_name}.tsv")), header = T, sep = "\t", comment.char = "")$celltype) %>% 
+  cell_counts <- table(read.table(file = file.path(samp_dir, glue("{sample_name}.tsv")), header = T, sep = "\t", comment.char = "")$genevector_l2) %>% 
     as.data.frame()
   
   df$cellA <- str_split(df$celltype_pair, pattern = "\\.", simplify = TRUE)[,1]
@@ -291,7 +298,7 @@ df_heatmap_myeloid<-df_heatmap[which(df_heatmap$cellA=="Cancer"|df_heatmap$cellA
 
 df_heatmap_myeloid<-df_heatmap_myeloid[which(df_heatmap_myeloid$cellB=="Cancer"|df_heatmap_myeloid$cellB=="Dendritic_cells"|df_heatmap_myeloid$cellB=="Macrophages"|df_heatmap_myeloid$cellB=="Mast_Cell"|df_heatmap_myeloid$cellB=="Monocytes"|df_heatmap_myeloid$cellB=="Plasmacytoid_DCs"),]
 
-df_heatmap_myeloid<-df_heatmap_myeloid[which(df_heatmap_myeloid$cellA=="Cancer"|df_heatmap_myeloid$cellB=="Cancer"),]
+df_heatmap_myeloid<-df_heatmap[which(df_heatmap$cellA=="Cancer"|df_heatmap$cellB=="Cancer"),]
 #df_heatmap_myeloid<-df_heatmap_myeloid[-which(df_heatmap_myeloid$cellA=="Cancer"&df_heatmap_myeloid$cellB=="Cancer"),]
 
 for(i in 1:nrow(df_heatmap_myeloid)){
