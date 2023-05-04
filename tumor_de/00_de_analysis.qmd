@@ -352,26 +352,30 @@ p1 / p2 + plot_layout(guides = "collect")
 ```{r}
 deg_file <- here("tumor_de", "tumor_des_mast.txt")
 
+lfc_thresh <- 0.25
+p_thresh <- 0.05
+
 if (file.exists(deg_file)) {
   de.markers.mast <- read.table(deg_file, header = T, sep = "\t", quote = "\"")
 } else {
   de.markers.mast <- FindMarkers(epi, assay = "originalexp", test.use = "MAST", ident.1 = "tumor cell", ident.2 = "epithelial cell", latent.vars = "sample_name", features = rownames(epi))
-  write.table(de.markers.mast, file = deg_file, quote = F, col.names = T, row.names = T, sep = "\t")
+
+  de.markers.mast <- de.markers.mast %>%
+    # mutate(Gene = rownames(de.markers.mast), .before = p_val) %>%
+    mutate(
+      sig = ifelse(de.markers.mast$p_val_adj < p_thresh & abs(de.markers.mast$avg_log2FC) >= lfc_thresh, T, F),
+      gene_info = factor(ifelse(avg_log2FC > 0, "Up in Tumor", "Down in Tumor"))
+    ) %>%
+    arrange(desc(abs(avg_log2FC)))
+
+  write.table(de.markers.mast, file = deg_file, quote = F, col.names = T, row.names = F, sep = "\t")
+  writexl::write_xlsx(de.markers.mast, path = here("tumor_de", "tumor_des_mast.xlsx"))
 }
 ```
 
 Subset for most significant DEGs
 
 ```{r}
-lfc_thresh <- 0.25
-p_thresh <- 0.05
-
-de.markers.mast$sig <- ifelse(de.markers.mast$p_val_adj < p_thresh & abs(de.markers.mast$avg_log2FC) >= lfc_thresh, T, F)
-
-de.markers.mast$gene_info <- with(de.markers.mast, factor(ifelse(avg_log2FC > 0, "Up in Tumor", "Down in Tumor")))
-
-de.markers.mast$Gene <- rownames(de.markers.mast)
-
 de_list <- filter(de.markers.mast, sig == T) %>%
   arrange(desc((avg_log2FC)))
 ```
@@ -400,7 +404,7 @@ volcano_plot <- ggplot(de.markers.mast, aes(x = avg_log2FC, y = -log10(p_val_adj
   geom_label_repel(data = dplyr::filter(de.markers.mast, Gene %in% gene_label), aes(label = Gene), size = 3, min.segment.length = 0) +
   labs(color = NULL) +
   theme(legend.position = "none")
-ggsave(volcano_plot, filename = "volcano_plot.pdf", width = 5, height = 4)
+# ggsave(volcano_plot, filename = "volcano_plot.pdf", width = 5, height = 4)
 volcano_plot
 ```
 
@@ -430,7 +434,7 @@ gene_plot <- scater::makePerCellDF(epi_sce, features = features_to_plot, assay.t
   ggplot(aes(x = fct_reorder(Gene, abs(avg_log2FC)), y = Expression)) +
   geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
   guides(x = guide_axis(angle = 45)) +
-  facet_grid(.~gene_info, scales = "free", space = "free") +
+  facet_grid(. ~ gene_info, scales = "free", space = "free") +
   labs(x = "Gene")
 # ggsave(gene_plot, filename = "deg_boxplots.pdf", width = 20, height = 5)
 gene_plot
@@ -448,7 +452,7 @@ scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcou
   ggplot(aes(x = Gene, y = Expression)) +
   geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
   guides(x = guide_axis(angle = 45)) +
-  facet_grid(.~gene_info, scales = "free", space = "free") +
+  facet_grid(. ~ gene_info, scales = "free", space = "free") +
   labs(x = "Gene")
 ```
 
@@ -463,7 +467,7 @@ scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcou
   ggplot(aes(x = Gene, y = Expression)) +
   geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
   guides(x = guide_axis(angle = 45)) +
-  facet_grid(.~gene_info, scales = "free", space = "free") +
+  facet_grid(. ~ gene_info, scales = "free", space = "free") +
   labs(x = "Gene")
 ```
 
@@ -474,18 +478,19 @@ Look for genes that are highly tumor cell specific
 ```{r}
 tum_specific_genes <- de.markers.mast %>%
   filter(gene_info == "Up in Tumor") %>%
-  filter(sig == TRUE) %>% 
+  filter(sig == TRUE) %>%
   filter(pct.2 < 0.1)
 
 write.table(tum_specific_genes, file = "tum_specific_des.txt", col.names = T, row.names = F, sep = "\t", quote = F)
+writexl::write_xlsx(tum_specific_genes, path = "tum_specific_des.xlsx")
 
- top_tum_genes <- de.markers.mast %>%
+top_tum_genes <- de.markers.mast %>%
   filter(gene_info == "Up in Tumor") %>%
-  filter(sig == TRUE) %>% 
+  filter(sig == TRUE) %>%
   filter(pct.2 < 0.1) %>%
   filter(avg_log2FC > 0.5)
-  # slice_max(avg_log2FC, n = 20, with_ties = F) %>%
-  # pull(Gene)
+# slice_max(avg_log2FC, n = 20, with_ties = F) %>%
+# pull(Gene)
 
 DT::datatable(top_tum_genes)
 ```
@@ -498,7 +503,7 @@ scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcou
   ggplot(aes(x = fct_reorder(Gene, abs(avg_log2FC)), y = Expression)) +
   geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
   guides(x = guide_axis(angle = 45)) +
-  facet_grid(.~gene_info, scales = "free", space = "free") +
+  facet_grid(. ~ gene_info, scales = "free", space = "free") +
   labs(x = "Gene")
 ```
 
