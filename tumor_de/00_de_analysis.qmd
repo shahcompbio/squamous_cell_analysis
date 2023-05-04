@@ -1,0 +1,507 @@
+---
+title: "Squamous Tumor DEG Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+# Introduction
+
+Here we subset for suspected epithelial cells perform DE.
+
+#### Notes
+
+Look for TGFb dependent stem-like cancer cells SMAD signalling pathways TGFb receptor expression
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(anndata)
+library(reticulate)
+use_condaenv("scanpy_new")
+# library(zellkonverter)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(patchwork)
+library(zellkonverter)
+library(SingleCellExperiment)
+library(Seurat)
+library(here)
+```
+
+## Load Data
+
+```{r}
+adata <- read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops.h5ad")
+
+sce <- AnnData2SCE(adata)
+```
+
+Load and merge infercnv results
+
+```{r}
+cnv <- readRDS(here("cnv", "infercnv", "10mb_merged_sce_tumorcell_assigned_sce.rds"))
+
+infercnv_res <- read.table(here("cnv", "infercnv", "infercnv_results.txt.gz"), header = T, sep = "\t")
+
+rownames(infercnv_res) <- infercnv_res$cell_id
+common_cells <- intersect(colnames(sce), infercnv_res$cell_id)
+
+sce <- sce[, common_cells]
+
+cnv <- cnv[, common_cells]
+
+infercnv_res <- infercnv_res[common_cells, ]
+
+
+sce$tumor_cell <- cnv$is_tumor_cell
+sce$cnv_clusters_patient <- cnv$clusters_patient
+sce$cnv_clusters_cohort <- cnv$clusters_cohort
+
+reducedDim(sce, "cnv_umap") <- reducedDim(cnv, "UMAP_cohort")
+```
+
+Load and merge liftover
+
+```{r}
+liftover <- read.table(file = here("Azimuth", "squamous_lungref_azimuth_refmapped.txt"), header = T, sep = "\t")
+
+rownames(liftover) <- liftover$cell_id
+
+liftover <- liftover[common_cells, ]
+
+colData(sce)[, grep("predicted", colnames(liftover), value = T)] <- liftover[, grep("predicted", colnames(liftover), value = T)]
+```
+
+```{r}
+dittoDimPlot(sce, var = "tumor_cell", reduction.use = "X_umap")
+dittoDimPlot(sce, var = "genevector_l2", reduction.use = "X_umap", do.label = T, labels.size = 2)
+dittoDimPlot(sce, var = "predicted.ann_level_1", reduction.use = "X_umap", do.label = T, labels.size = 2)
+dittoDimPlot(sce, var = "predicted.ann_level_2", reduction.use = "X_umap", do.label = T, labels.size = 2)
+```
+
+
+```{r, fig.width=8, fig.height=4}
+dittoDimPlot(sce, var = "predicted.ann_level_3", reduction.use = "X_umap", do.label = T, labels.size = 2)
+```
+
+Relabel and clean tumor cell calls and normal epithelial cells
+
+```{r}
+with(colData(sce), table(tumor_cell, genevector_l2))
+```
+
+```{r}
+colData(sce)[sce$genevector_l2 != "Epithelial", "tumor_cell"] <- FALSE
+sce$cell_type <- as.character(sce$genevector_l2)
+colData(sce)[sce$tumor_cell == TRUE, "cell_type"] <- "Cancer"
+
+sce$cell_type <- as.factor(sce$cell_type)
+
+with(colData(sce), table(tumor_cell, cell_type))
+```
+
+```{r}
+dittoDimPlot(sce, var = "tumor_cell", reduction.use = "X_umap", size = 0.5, opacity = 0.25)
+dittoDimPlot(sce, var = "cell_type", reduction.use = "X_umap", size = 0.5, opacity = 0.25)
+
+dittoDimPlot(sce, var = "tumor_cell", reduction.use = "cnv_umap", size = 0.5, opacity = 0.25)
+dittoDimPlot(sce, var = "cell_type", reduction.use = "cnv_umap", size = 0.5, opacity = 0.25)
+```
+
+```{r}
+library(scater)
+
+sce$sample_name <- str_split(sce$orig.ident, pattern = "_", simplify = T)[, 3]
+
+tgf_exp_plot <- ggcells(sce[, sce$cell_type %in% c("Epithelial", "Cancer")], exprs_values = "X", aes(x = sample_name, y = TGFB1, fill = cell_type)) +
+  geom_violin(scale = "width") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(x = NULL)
+tgf_exp_plot
+```
+
+```{r}
+smads <- c("TGFB1", "TGFBR1", grep("SMAD", rownames(sce), value = T))
+
+makePerCellDF(sce[, sce$cell_type %in% c("Epithelial", "Cancer")], features = smads, assay.type = "X", use.coldata = T, use.dimred = F) %>%
+  pivot_longer(cols = all_of(smads), names_to = "gene", values_to = "expression") -> smad_df
+```
+
+```{r, fig.width=12, fig.height=6}
+smad_exp_plot <- smad_df %>%
+  ggplot(aes(x = sample_name, y = expression, fill = cell_type)) +
+  geom_violin(scale = "width") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(x = NULL) +
+  facet_wrap(. ~ gene, scales = "free_x", ncol = 3)
+smad_exp_plot
+```
+
+```{r, fig.width=10, fig.height=5}
+tgf_exp_plot + smad_exp_plot + plot_layout(widths = c(1, 4), guides = "collect")
+```
+
+## Recluster
+
+```{r}
+library(harmony)
+srt <- as.Seurat(sce, counts = "X", data = "X")
+
+srt <- srt %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA() %>%
+  FindNeighbors() %>%
+  FindClusters(resolution = 0.5) %>%
+  RunUMAP(dims = 1:20)
+
+srt$cohort_clusters <- srt$seurat_clusters
+
+srt <- srt %>%
+  RunHarmony(group.by.vars = "sample_name", reduction = "pca", assay.use = "originalexp", reduction.save = "harmony") %>%
+  RunUMAP(reduction = "harmony", assay = "originalexp", dims = 1:30, reduction.name = "umap_harmony") %>%
+  FindNeighbors(reduction = "harmony")
+```
+
+Refine clustering resolution to make sure all groups are represented
+
+```{r}
+plan("sequential")
+srt <- srt %>%
+  FindClusters(resolution = 0.8)
+
+srt$cohort_clusters_harmony <- srt$seurat_clusters
+```
+
+```{r, fig.width = 11, fig.height = 4}
+DimPlot(srt, group.by = c("cell_type", "cohort_clusters"), reduction = "umap", label = T)
+```
+
+```{r}
+epi_clusters <- c(5, 12, 14, 15, 17)
+
+srt$epithelial_cell <- srt$cohort_clusters %in% epi_clusters
+
+srt$tum_epi <- factor(
+  with(srt@meta.data, ifelse(epithelial_cell == TRUE & tumor_cell == TRUE, "tumor cell",
+    ifelse(epithelial_cell == TRUE & tumor_cell == FALSE, "epithelial cell", "other")
+  )),
+  levels = c("tumor cell", "epithelial cell", "other")
+)
+
+
+with(srt@meta.data, table(epithelial_cell, tumor_cell))
+```
+
+```{r, fig.width = 11, fig.height = 4}
+DimPlot(srt, group.by = c("cell_type", "cohort_clusters_harmony"), reduction = "umap_harmony", label = T)
+```
+
+```{r, fig.width = 15, fig.height = 9}
+DimPlot(srt, group.by = c("cohort_clusters_harmony", "predicted.ann_level_1", "predicted.ann_level_2", "predicted.ann_level_3"), reduction = "umap_harmony", label = T, ncol = 2, label.size = 3)
+```
+
+```{r}
+# plan("multisession", workers = 8)
+#
+# Idents(srt) <- "cohort_clusters_harmony"
+# markers <- FindAllMarkers(srt, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+# markers %>%
+#     group_by(cluster) %>%
+#     slice_max(n = 2, order_by = avg_log2FC)
+```
+
+```{r}
+FeaturePlot(srt, features = c("EPCAM", "KRT8", "KRT19", "PTPRC"), reduction = "umap", label = F)
+```
+
+```{r, fig.height=10, fig.width=10}
+VlnPlot(srt, features = c("EPCAM", "KRT8", "KRT19", "PTPRC"), group.by = "tum_epi", ncol = 3)
+```
+
+```{r, fig.height=10, fig.width=10}
+VlnPlot(srt, features = c("KRT7", "PIGR", "ELF3", "CYB5A", "KRT8", "KRT19", "TACSTD2", "MUC1", "S100A14", "CXCL17"), group.by = "tum_epi", ncol = 5)
+```
+
+```{r, fig.height=12, fig.width=12}
+FeaturePlot(srt, features = c("KRT7", "PIGR", "ELF3", "CYB5A", "KRT8", "KRT19", "TACSTD2", "MUC1", "S100A14", "CXCL17"), ncol = 3, reduction = "umap", label = F, max.cutoff = "q98")
+```
+
+```{r}
+DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "umap", label = T)
+DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "X_umap", label = T)
+DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "umap_harmony", label = T)
+```
+
+### Check CNVs
+
+```{r}
+devtools::load_all("~/repos/scatools")
+
+cnv_epi <- cnv[, cnv$cell_id %in% colnames(srt[, srt$epithelial_cell == TRUE])]
+
+cnv_epi$sample_name <- str_split(cnv_epi$orig.ident, pattern = "_", simplify = T)[, 3]
+
+cnv_epi <- scatools::cluster_seurat(cnv_epi, assay_name = "counts", resolution = 0.8, algorithm = "leiden", suffix = "_epi_cnv")
+```
+
+```{r}
+dittoDimPlot(cnv_epi, var = "sample_name", reduction = "UMAP_epi_cnv")
+
+dittoDimPlot(cnv_epi, var = "clusters_epi_cnv", reduction = "UMAP_epi_cnv")
+
+dittoDimPlot(cnv_epi, var = "is_tumor_cell", reduction = "UMAP_epi_cnv")
+```
+
+TODO: Update the left annotation with sample
+
+```{r, fig.width=11, fig.height=10}
+cnaHeatmap(cnv_epi, assay_name = "counts", clone_name = "is_tumor_cell", log2 = T, col_fun = logr_col_fun(breaks = c(-0.2, -0.05, 0.05, 0.2), colors = c("blue", "white", "white", "red")))
+```
+
+### Subset Epithelial
+
+```{r}
+epi <- srt[, srt$epithelial_cell] %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA()
+
+ElbowPlot(epi, ndims = 50)
+```
+
+```{r, fig.width=7, fig.height=5}
+top10 <- head(VariableFeatures(epi), 10)
+
+LabelPoints(plot = VariableFeaturePlot(epi), points = top10, repel = TRUE)
+```
+
+
+```{r, fig.height=10, fig.width=7}
+VizDimLoadings(epi, dims = 1:4, reduction = "pca")
+```
+
+```{r}
+DimPlot(epi, reduction = "pca", group.by = "sample_name")
+```
+
+```{r}
+DimPlot(epi, reduction = "pca", group.by = "sample_name", dims = c(3, 4))
+```
+
+Post process and cluster
+
+```{r}
+use_dims <- 1:15
+
+epi <- epi %>%
+  FindNeighbors(dims = use_dims) %>%
+  FindClusters(resolution = 0.5) %>%
+  RunUMAP(dims = use_dims)
+
+epi$epi_clusters <- epi$seurat_clusters
+
+# And a Harmony run
+epi <- epi %>%
+  RunHarmony(group.by.vars = "sample_name", reduction = "pca", assay.use = "originalexp", reduction.save = "harmony") %>%
+  RunUMAP(reduction = "harmony", assay = "originalexp", dims = 1:30, reduction.name = "umap_harmony") %>%
+  FindNeighbors(reduction = "harmony") %>%
+  FindClusters(resolution = 0.5)
+
+epi$epi_clusters_harmony <- epi$seurat_clusters
+```
+
+```{r, fig.width=10, fig.height=5}
+DimPlot(epi, reduction = "umap", group.by = c("seurat_clusters", "sample_name"), combine = T, ncol = 2, label = T)
+```
+
+```{r, fig.width=10, fig.height=7}
+DimPlot(epi, reduction = "umap_harmony", group.by = c("seurat_clusters", "tum_epi", "sample_name"), combine = T, ncol = 2, label = F, label.size = 3)
+```
+
+```{r, fig.height=5, fig.width=7}
+p1 <- dittoBarPlot(epi, var = "sample_name", group.by = "epi_clusters_harmony")
+p2 <- dittoBarPlot(epi, var = "tum_epi", group.by = "epi_clusters_harmony")
+p1 / p2
+```
+
+```{r}
+DimPlot(epi, reduction = "umap_harmony", group.by = c("seurat_clusters"), label = T)
+```
+
+```{r, fig.width=5, fig.height=4}
+p1 <- dittoBarPlot(epi, var = "tum_epi", group.by = "sample_name", scale = "percent")
+
+p2 <- dittoBarPlot(epi, var = "tum_epi", group.by = "sample_name", scale = "count")
+p1 / p2 + plot_layout(guides = "collect")
+```
+
+### DEG analysis
+
+```{r}
+deg_file <- here("tumor_de", "tumor_des_mast.txt")
+
+if (file.exists(deg_file)) {
+  de.markers.mast <- read.table(deg_file, header = T, sep = "\t", quote = "\"")
+} else {
+  de.markers.mast <- FindMarkers(epi, assay = "originalexp", test.use = "MAST", ident.1 = "tumor cell", ident.2 = "epithelial cell", latent.vars = "sample_name", features = rownames(epi))
+  write.table(de.markers.mast, file = deg_file, quote = F, col.names = T, row.names = T, sep = "\t")
+}
+```
+
+Subset for most significant DEGs
+
+```{r}
+lfc_thresh <- 0.25
+p_thresh <- 0.05
+
+de.markers.mast$sig <- ifelse(de.markers.mast$p_val_adj < p_thresh & abs(de.markers.mast$avg_log2FC) >= lfc_thresh, T, F)
+
+de.markers.mast$gene_info <- with(de.markers.mast, factor(ifelse(avg_log2FC > 0, "Up in Tumor", "Down in Tumor")))
+
+de.markers.mast$Gene <- rownames(de.markers.mast)
+
+de_list <- filter(de.markers.mast, sig == T) %>%
+  arrange(desc((avg_log2FC)))
+```
+
+Volcano plot
+
+```{r, fig.width=5, fig.height=4}
+library(ggrepel)
+# Label top most DE genes
+gene_label <- de.markers.mast %>%
+  filter(sig == TRUE) %>%
+  group_by(gene_info) %>%
+  slice_min(p_val_adj, n = 5, with_ties = F) %>%
+  pull(Gene)
+# must_include <- c("NUTM1", "FOXC2", "FOXL1", "BMP2", "FLT3")
+# gene_label <- unique(c(gene_label, must_include))
+lt <- "dashed"
+al <- 1
+volcano_plot <- ggplot(de.markers.mast, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+  geom_point(aes(color = sig), size = 0.5) +
+  scale_color_manual(values = c("grey80", "black")) +
+  geom_segment(x = -Inf, xend = -lfc_thresh, y = -log10(p_thresh), yend = -log10(p_thresh), linetype = lt, alpha = al) +
+  geom_segment(x = lfc_thresh, xend = Inf, y = -log10(p_thresh), yend = -log10(p_thresh), linetype = lt, alpha = al) +
+  geom_segment(x = -lfc_thresh, xend = -lfc_thresh, y = -log10(p_thresh), yend = Inf, linetype = lt, alpha = al) +
+  geom_segment(x = lfc_thresh, xend = lfc_thresh, y = -log10(p_thresh), yend = Inf, linetype = lt, alpha = al) +
+  geom_label_repel(data = dplyr::filter(de.markers.mast, Gene %in% gene_label), aes(label = Gene), size = 3, min.segment.length = 0) +
+  labs(color = NULL) +
+  theme(legend.position = "none")
+ggsave(volcano_plot, filename = "volcano_plot.pdf", width = 5, height = 4)
+volcano_plot
+```
+
+```{r, fig.height=10, fig.width=10}
+to_plot <- de.markers.mast %>%
+  filter(gene_info == "Up in Tumor") %>%
+  filter(sig == TRUE) %>%
+  group_by(gene_info) %>%
+  slice_max(avg_log2FC, n = 20, with_ties = F) %>%
+  pull(Gene)
+
+VlnPlot(epi, features = to_plot, group.by = "tum_epi", ncol = 5)
+```
+
+```{r}
+epi_sce <- as.SingleCellExperiment(epi)
+```
+
+##### Top up in tumor genes
+
+```{r, fig.width=8, fig.height=3}
+features_to_plot <- to_plot
+
+gene_plot <- scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcounts", use.dimred = FALSE, use.altexps = FALSE, use.coldata = TRUE) %>%
+  pivot_longer(cols = all_of(features_to_plot), names_to = "Gene", values_to = "Expression") %>%
+  left_join(de_list) %>%
+  ggplot(aes(x = fct_reorder(Gene, abs(avg_log2FC)), y = Expression)) +
+  geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
+  guides(x = guide_axis(angle = 45)) +
+  facet_grid(.~gene_info, scales = "free", space = "free") +
+  labs(x = "Gene")
+# ggsave(gene_plot, filename = "deg_boxplots.pdf", width = 20, height = 5)
+gene_plot
+```
+
+
+##### SMADs
+
+```{r}
+features_to_plot <- grep("SMAD", rownames(epi_sce), value = T)
+
+scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcounts", use.dimred = FALSE, use.altexps = FALSE, use.coldata = TRUE) %>%
+  pivot_longer(cols = all_of(features_to_plot), names_to = "Gene", values_to = "Expression") %>%
+  left_join(de_list) %>%
+  ggplot(aes(x = Gene, y = Expression)) +
+  geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
+  guides(x = guide_axis(angle = 45)) +
+  facet_grid(.~gene_info, scales = "free", space = "free") +
+  labs(x = "Gene")
+```
+
+##### TGFBR
+
+```{r}
+features_to_plot <- grep("TGFBR", rownames(epi_sce), value = T)
+
+scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcounts", use.dimred = FALSE, use.altexps = FALSE, use.coldata = TRUE) %>%
+  pivot_longer(cols = all_of(features_to_plot), names_to = "Gene", values_to = "Expression") %>%
+  left_join(de_list) %>%
+  ggplot(aes(x = Gene, y = Expression)) +
+  geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
+  guides(x = guide_axis(angle = 45)) +
+  facet_grid(.~gene_info, scales = "free", space = "free") +
+  labs(x = "Gene")
+```
+
+#### Tumor Specific genes
+
+Look for genes that are highly tumor cell specific
+
+```{r}
+tum_specific_genes <- de.markers.mast %>%
+  filter(gene_info == "Up in Tumor") %>%
+  filter(sig == TRUE) %>% 
+  filter(pct.2 < 0.1)
+
+write.table(tum_specific_genes, file = "tum_specific_des.txt", col.names = T, row.names = F, sep = "\t", quote = F)
+
+ top_tum_genes <- de.markers.mast %>%
+  filter(gene_info == "Up in Tumor") %>%
+  filter(sig == TRUE) %>% 
+  filter(pct.2 < 0.1) %>%
+  filter(avg_log2FC > 0.5)
+  # slice_max(avg_log2FC, n = 20, with_ties = F) %>%
+  # pull(Gene)
+
+DT::datatable(top_tum_genes)
+```
+
+```{r, fig.width=10, fig.height=3}
+features_to_plot <- top_tum_genes$Gene
+scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcounts", use.dimred = FALSE, use.altexps = FALSE, use.coldata = TRUE) %>%
+  pivot_longer(cols = all_of(features_to_plot), names_to = "Gene", values_to = "Expression") %>%
+  left_join(de_list) %>%
+  ggplot(aes(x = fct_reorder(Gene, abs(avg_log2FC)), y = Expression)) +
+  geom_boxplot(aes(fill = tum_epi), outlier.size = 0.2) +
+  guides(x = guide_axis(angle = 45)) +
+  facet_grid(.~gene_info, scales = "free", space = "free") +
+  labs(x = "Gene")
+```
+
+```{r, fig.width=10, fig.height=20}
+VlnPlot(epi, features = features_to_plot, group.by = "tum_epi", ncol = 5)
+```
