@@ -270,7 +270,7 @@ TODO: Update the left annotation with sample
 cnaHeatmap(cnv_epi, assay_name = "counts", clone_name = "is_tumor_cell", log2 = T, col_fun = logr_col_fun(breaks = c(-0.2, -0.05, 0.05, 0.2), colors = c("blue", "white", "white", "red")))
 ```
 
-### Subset Epithelial
+## Subset Epithelial
 
 ```{r}
 epi <- srt[, srt$epithelial_cell] %>%
@@ -347,7 +347,36 @@ p2 <- dittoBarPlot(epi, var = "tum_epi", group.by = "sample_name", scale = "coun
 p1 / p2 + plot_layout(guides = "collect")
 ```
 
-### DEG analysis
+
+### Epithelial cluster markers
+
+```{r}
+Idents(epi) <- "epi_clusters_harmony"
+plan("multisession", workers = 8)
+epi_markers <- FindAllMarkers(epi, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
+plan("sequential")
+
+epi_markers_top <- epi_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 10, order_by = avg_log2FC)
+
+write.table(epi_markers_top, file = "epi_clusters_top.txt", col.names = T, sep = "\t", row.names = F, quote = F)
+writexl::write_xlsx(epi_markers_top, path = "epi_clusters_top.xlsx")
+```
+
+
+```{r, fig.width=16, fig.height=10}
+to_plot <- epi_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 3, order_by = avg_log2FC) %>%
+  pull(gene)
+
+FeaturePlot(epi, features = to_plot, reduction = "umap_harmony", max.cutoff = "q99", ncol = 9) & NoLegend()
+```
+
+
+
+## DEG analysis
 
 ```{r}
 deg_file <- here("tumor_de", "tumor_des_mast.txt")
@@ -423,7 +452,7 @@ VlnPlot(epi, features = to_plot, group.by = "tum_epi", ncol = 5)
 epi_sce <- as.SingleCellExperiment(epi)
 ```
 
-##### Top up in tumor genes
+### Top up in tumor genes
 
 ```{r, fig.width=8, fig.height=3}
 features_to_plot <- to_plot
@@ -441,7 +470,7 @@ gene_plot
 ```
 
 
-##### SMADs
+### SMADs
 
 ```{r}
 features_to_plot <- grep("SMAD", rownames(epi_sce), value = T)
@@ -456,7 +485,7 @@ scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcou
   labs(x = "Gene")
 ```
 
-##### TGFBR
+### TGFBR
 
 ```{r}
 features_to_plot <- grep("TGFBR", rownames(epi_sce), value = T)
@@ -471,7 +500,7 @@ scater::makePerCellDF(epi_sce, features = features_to_plot, assay.type = "logcou
   labs(x = "Gene")
 ```
 
-#### Tumor Specific genes
+### Tumor Specific genes
 
 Look for genes that are highly tumor cell specific
 
