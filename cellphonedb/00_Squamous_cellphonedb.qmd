@@ -43,6 +43,10 @@ write.table(x = a,file = paste0("/work/shah/users/Mobina/Project_Squamous/Result
   }
 ```
 
+cellphonedb run:
+#bsub -J "jobname2" -R "rusage[mem=8]" -R "select[type==CentOS7]" -W 02:00 -n 16 -o output -e error sh cellphonedb_sample_by_sample_squamous_project.sh
+
+
 #Analyzng cellphonedb results #results pvals,means,decon,sigmenas data
 
 

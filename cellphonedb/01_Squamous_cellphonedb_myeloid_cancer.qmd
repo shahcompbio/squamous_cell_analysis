@@ -25,7 +25,7 @@ library(here)
 ```{r}
 adata_Full<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_myeloid_Cancer_cellphonedb.h5ad")
 
-adata_Full<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops.h5ad)
+adata_Full<-read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops_with_cancer.h5ad")
 
 
 
@@ -44,7 +44,7 @@ ggplot(a, aes(x=orig.ident, y=Freq,fill=genevector_l2)) +
 #cellphonedb #split data into seperate sample data
 
 ```{R,warning=F}
-adata_Full<-adata_Full[adata_Full$obs$genevector_l2 %in% c("Macrophage","Dendritic","Monocyte","pDC","Cancer")]
+#adata_Full<-adata_Full[adata_Full$obs$genevector_l2 %in% c("Macrophage","Dendritic","Monocyte","pDC","Cancer")]
 
 Sample_cell_frequency<-table(adata_Full$obs$orig.ident)
 Sample_cell_frequency<-as.data.frame(Sample_cell_frequency)
@@ -52,10 +52,10 @@ adata_Full_metadata <- split(adata_Full$obs, f = adata_Full$obs$orig.ident)
 adata_Full_list<-list()
 for(i in 1:nrow(Sample_cell_frequency)){
   adata_Full_list[[i]]<-adata_Full[rownames(adata_Full_metadata[[i]]),]
-  dir.create(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Sample",Sample_cell_frequency$Var1[i]))
-  write_h5ad(anndata = adata_Full_list[[i]],filename=paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".h5ad"))
+  dir.create(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/Sample",Sample_cell_frequency$Var1[i]))
+  write_h5ad(anndata = adata_Full_list[[i]],filename=paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".h5ad"))
 a<-adata_Full_list[[i]]$obs[,c("index","genevector_l2")]
-write.table(x = a,file = paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".tsv"),quote = F,row.names = F,sep = "\t")
+write.table(x = a,file = paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/Sample",Sample_cell_frequency$Var1[i],"/Sample",Sample_cell_frequency$Var1[i],".tsv"),quote = F,row.names = F,sep = "\t")
   }
 ```
 
@@ -63,7 +63,7 @@ write.table(x = a,file = paste0("/work/shah/users/Mobina/Project_Squamous/Result
 
 
 ```{r}
-sample_dirs <- list.dirs("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer", recursive = F)
+sample_dirs <- list.dirs("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb", recursive = F)
 
 ```
 
@@ -76,14 +76,18 @@ df_list <- lapply(seq_along(sample_dirs), function(i) {
   
   logger::log_info("Processing sample {i} of {length(sample_dirs)}: {sample_name}")
 
-  sigmeans <- read.table(file = file.path(samp_dir, "significant_means.txt"), header = T, sep = "\t")
+   sigmeans <- read.table(file = file.path(samp_dir,list.files(path = samp_dir,pattern = "statistical_analysis_significant_means")), header = T, sep = "\t")
   
   data_cols <- colnames(sigmeans)[(which(colnames(sigmeans) == "rank")+1):ncol(sigmeans)]
 
   df <- pivot_longer(sigmeans, cols = all_of(data_cols), names_to = "celltype_pair", values_to = "sigmeans")
   
+  df$celltype_pair <- gsub(pattern = "B.Cell", replacement = "B_Cell", df$celltype_pair)
+  df$celltype_pair <- gsub(pattern = "T.Cell", replacement = "T_Cell", df$celltype_pair)
+  df$celltype_pair <- gsub(pattern = "Mast.Cell", replacement = "Mast_Cell", df$celltype_pair)
+  df$celltype_pair <- gsub(pattern = "Myeloid.Undefined", replacement = "Myeloid_Undefined", df$celltype_pair)
 
-  cell_counts <- table(read.table(file = file.path(samp_dir, glue("{sample_name}.tsv")), header = T, sep = "\t", comment.char = "")$genevector_l2) %>% 
+  cell_counts <- table(read.table(file = file.path(samp_dir,list.files(path = samp_dir,pattern = ".tsv")), header = T, sep = "\t", comment.char = "")$genevector_l2) %>% 
     as.data.frame()
   
   df$cellA <- str_split(df$celltype_pair, pattern = "\\.", simplify = TRUE)[,1]
@@ -216,6 +220,9 @@ with(df, signif(prop.table(table(sample_name, cellA_pass_frac), margin = 1)))
 ```{r}
 with(df, signif(prop.table(table(sample_name, cellB_pass_frac), margin = 1)))
 ```
+```{r}
+df<-df[which(df$cellA!="Unknown"&df$cellB!="Unknown"),]
+```
 
 
 count number of reported lr pair for each sample for each cell cell inetraction 
@@ -268,7 +275,7 @@ df_heatmap <-df %>% group_by(celltype_pair) %>% summarise(Count = n_distinct(id_
   df_heatmap$cellB <- str_split(df_heatmap$celltype_pair, pattern = "\\.", simplify = TRUE)[,2]
   
   
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Heatmap_significant.pdf"))  
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/Heatmap_significant.pdf"))  
 ggplot(df_heatmap, aes(x =cellA ,
                          y = cellB,
                          fill = Count))+geom_tile()+scale_fill_gradient(low = "white", high = "brown")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
@@ -282,7 +289,7 @@ dev.off()
 
 df_heatmap_no_cancer_cancer<-df_heatmap[-which(df_heatmap$cellA=="Cancer"&df_heatmap$cellB=="Cancer"),]
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/Heatmap_significant_no_cancer_cancer.pdf"))  
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/Heatmap_significant_no_cancer_cancer.pdf"))  
 ggplot(df_heatmap_no_cancer_cancer, aes(x =cellA ,
                          y = cellB,
                          fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
@@ -311,17 +318,17 @@ for(i in 1:nrow(df_heatmap_myeloid)){
 }
 df_heatmap_myeloid$celltype_pair <- factor(df_heatmap_myeloid$celltype_pair, levels = df_heatmap_myeloid$celltype_pair[order(df_heatmap_myeloid$Celltype)])
 
-p<-ggplot(df_heatmap_myeloid, aes(x=celltype_pair, y=Count,fill=Celltype)) +
-  geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90)) 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/barplot_Myeloid_Cancer.pdf"))
+p<-ggplot(df_heatmap_myeloid, aes(x=fct_reorder(celltype_pair, Count, median), y=Count,fill=Celltype)) +
+  geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90))+xlab("Celltype")   
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/barplot_Myeloid_Cancer.pdf"))
 p
 dev.off()
 
 
-ggplot(df_heatmap_myeloid, aes(x =cellA ,
+ggplot(df_heatmap_myeloid, aes(x=fct_reorder(cellA, Count, median),
                          y = cellB,
                          fill = Count))+geom_tile()+scale_fill_distiller(palette = "Spectral")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+
-  ggtitle("Heatmap_Myeloid_Cancer")  
+  ggtitle("Heatmap_Myeloid_Cancer")
 
 #dev.off()
 
@@ -336,7 +343,7 @@ df<-df[which(df$cellA=="Cancer"|df$cellB=="Cancer"),]
 #df_sigmeans_greater_1<-df[which(df$sigmeans>1),]
 colnames(df)[which(colnames(df)=="count_each_LR_per_interaction_overal")]<-"Count_patients"
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot.pdf"),width = 19,height = 90)
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot.pdf"),width = 19,height = 90)
 ggplot(data = df, aes(celltype_pair, interacting_pair, 
                                       colour = median_sigmeans, size = Count_patients )) + 
   geom_point() +
@@ -355,7 +362,7 @@ all paitients
 ```{r}
 df_all_patients<-df %>% filter(Count_patients==length(unique(df$sample_name)))
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot_present_all_patients.pdf"),width = 19,height = 30)
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot_present_all_patients.pdf"),width = 19,height = 30)
 ggplot(data = df_all_patients, aes(celltype_pair, interacting_pair, 
                                       colour = median_sigmeans, size = Count_patients )) + 
   geom_point() +
@@ -374,7 +381,7 @@ Look at LR pairs that are present in more than 5 patients
 ```{r}
 df_5_patients<-df %>% filter(Count_patients>=5)
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot_present_5_patients.pdf"),width = 19,height = 30)
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot_present_5_patients.pdf"),width = 19,height = 30)
 ggplot(data = df_5_patients, aes(celltype_pair, interacting_pair, 
                                       colour = median_sigmeans, size = Count_patients )) + 
   geom_point() +
@@ -392,7 +399,7 @@ Look at patient specific LR pairs
 ```{r}
 df_patient_specific<-df %>% filter(Count_patients==1)
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot_patient_specific.pdf"),width = 19,height = 60)
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot_patient_specific.pdf"),width = 19,height = 60)
 ggplot(data = df_patient_specific, aes(celltype_pair, interacting_pair, 
                                       colour = sigmeans,shape=sample_name)) + 
   geom_point(size=5) +
@@ -409,7 +416,7 @@ dev.off()
 
 
 
-# pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot_patient_specific.pdf"),width = 19,height = 90)
+# pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot_patient_specific.pdf"),width = 19,height = 90)
 # df %>% group_by(sample_name) %>% ggplot(aes(celltype_pair, interacting_pair, 
 #                                       colour = median_sigmeans)) + 
 #   geom_point() +
@@ -430,7 +437,7 @@ Yonit receptor of interest LILRB family
 ```{r}
 df_LILRB<-df[grep(pattern = "LILRB",x = df$gene_b),]
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot_ILRB_family.pdf"),width = 19,height = 10)
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot_ILRB_family.pdf"),width = 19,height = 10)
 ggplot(data = df_LILRB, aes(celltype_pair, interacting_pair, 
                                       colour = median_sigmeans,size=Count_patients )) + 
   geom_point() +
@@ -451,7 +458,7 @@ Cancer.Macrophages
 ```{r}
 df_Cancer_Macrophages_all_patients<-df_all_patients[which(df_all_patients$celltype_pair=="Cancer.Macrophages"|df_all_patients$celltype_pair=="Macrophages.Cancer"),]
 
-pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/cellphonedb_myeloid_cancer/dotplot_Cancer_Macrophages.pdf"),width = 19,height = 10)
+pdf(paste0("/work/shah/users/Mobina/Project_Squamous/Results/cellphonedb/Sample_new_version_cellphonedb/dotplot_Cancer_Macrophages.pdf"),width = 19,height = 10)
 ggplot(data = df_Cancer_Macrophages_all_patients, aes(celltype_pair, interacting_pair, 
                                       colour = median_sigmeans,size=Count_patients )) + 
   geom_point() +
