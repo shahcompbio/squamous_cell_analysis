@@ -644,9 +644,8 @@ feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.b
 Dump out pathway scores, tumor cell calls, clusters,
 
 ```{r}
-srt@meta.data %>%
-  select(cell_id, is_tumor_cell, clusters_harmony) %>%
-  write.table("results/epithelial_cell_clusters.txt", col.names = T, row.names = F, quote = F, sep = "\t")
+FetchData(srt, vars = c("cell_id", "is_tumor_cell", "clusters_harmony", "umapharmony_1", "umapharmony_2", colnames(scores)[2:ncol(scores)])) %>%
+  write.table(gzfile("results/epithelial_cell_clusters.txt.gz"), col.names = T, row.names = F, quote = F, sep = "\t")
 ```
 
 
