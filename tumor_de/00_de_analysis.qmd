@@ -42,7 +42,7 @@ library(here)
 ## Load Data
 
 ```{r}
-adata <- read_h5ad("/work/shah/users/Mobina/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops.h5ad")
+adata <- read_h5ad("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops.h5ad")
 
 sce <- AnnData2SCE(adata)
 ```
@@ -156,7 +156,10 @@ tgf_exp_plot + smad_exp_plot + plot_layout(widths = c(1, 4), guides = "collect")
 
 ```{r}
 library(harmony)
-srt <- as.Seurat(sce, counts = "X", data = "X")
+# srt <- as.Seurat(sce, counts = "X", data = "X")
+
+srt <- Seurat::CreateSeuratObject(counts = assay(sce), meta.data = as.data.frame(colData(sce)))
+
 
 srt <- srt %>%
   FindVariableFeatures() %>%
@@ -169,8 +172,8 @@ srt <- srt %>%
 srt$cohort_clusters <- srt$seurat_clusters
 
 srt <- srt %>%
-  RunHarmony(group.by.vars = "sample_name", reduction = "pca", assay.use = "originalexp", reduction.save = "harmony") %>%
-  RunUMAP(reduction = "harmony", assay = "originalexp", dims = 1:30, reduction.name = "umap_harmony") %>%
+  RunHarmony(group.by.vars = "sample_name", reduction = "pca", assay.use = "RNA", reduction.save = "harmony") %>%
+  RunUMAP(reduction = "harmony", assay = "RNA", dims = 1:30, reduction.name = "umap_harmony") %>%
   FindNeighbors(reduction = "harmony")
 ```
 
@@ -240,7 +243,7 @@ FeaturePlot(srt, features = c("KRT7", "PIGR", "ELF3", "CYB5A", "KRT8", "KRT19", 
 
 ```{r}
 DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "umap", label = T)
-DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "X_umap", label = T)
+# DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "X_umap", label = T)
 DimPlot(srt[, srt$epithelial_cell], group.by = "tum_epi", reduction = "umap_harmony", label = T)
 ```
 
@@ -270,7 +273,62 @@ TODO: Update the left annotation with sample
 cnaHeatmap(cnv_epi, assay_name = "counts", clone_name = "is_tumor_cell", log2 = T, col_fun = logr_col_fun(breaks = c(-0.2, -0.05, 0.05, 0.2), colors = c("blue", "white", "white", "red")))
 ```
 
-## Subset Epithelial
+Create custom heatmap
+
+```{r}
+library(ComplexHeatmap)
+# Get metadata and order cells
+df_meta <- colData(cnv_epi) %>% as.data.frame() %>%
+  # arrange(desc(tumor_cell), desc(clusters_patient_lab)) %>%
+  # mutate(sample_short = str_to_upper(str_sub(sample_name, 1, 5))) %>%
+  mutate(row_label = case_when(
+    is_tumor_cell == TRUE ~ paste(sample_name),
+    .default = "Normal"
+  )) %>%
+  add_count(row_label)
+# mat <- t(assay(sce_tissue[,df_meta$cell_id], "counts"))
+chrs <- as.vector(gsub("chr", "", GenomeInfoDb::seqnames(SummarizedExperiment::rowRanges(cnv_epi))))
+col_split <- factor(chrs, levels = unique(gtools::mixedsort(chrs)))
+# matlog2 <- log2(mat)
+
+idx <- 1:ncol(cnv_epi)
+# df_meta <- df_meta[idx,]
+    
+left_annot <- ComplexHeatmap::HeatmapAnnotation(
+  "Tumor Cell" = cnv_epi[, idx]$is_tumor_cell,
+  "Sample" = cnv_epi[, idx]$sample_name,
+  col = list(
+    "Tumor Cell" = c("TRUE" = "red", 
+                     "FALSE" = "blue")
+    ),
+  which = "row"
+  )
+    
+ht <- Heatmap(matrix = t(log2(assay(cnv_epi))),
+        left_annotation = left_annot,
+        name = "log2ratio",
+        
+        show_row_names = FALSE,
+        cluster_columns = FALSE,
+        show_column_names = FALSE,
+        cluster_rows = TRUE,
+        column_split = col_split,
+        raster_device = "CairoPNG",
+        border = TRUE,
+        raster_by_magick = FALSE,
+        row_split = df_meta$row_label,
+        row_title_rot = 0,
+        col = logr_col_fun(breaks = c(-0.1, -0.02, 0.02, 0.1), colors = c("blue", "white", "white", "red")),
+        show_parent_dend_line = FALSE,
+        show_row_dend = FALSE, cluster_row_slices = F, raster_quality = 15
+        
+        )
+pdf("plots/cohort_cnv_heatmap.pdf", width = 11, height = 8.5)
+draw(ht)
+dev.off()
+```
+
+## Save out Epithelial object for downstream processing
 
 ```{r}
 epi <- srt[, srt$epithelial_cell] %>%
@@ -278,8 +336,15 @@ epi <- srt[, srt$epithelial_cell] %>%
   ScaleData() %>%
   RunPCA()
 
-ElbowPlot(epi, ndims = 50)
+saveRDS(epi, "results/epithelial_object.rds")
 ```
+
+
+
+
+
+
+# Other stuff 
 
 ```{r, fig.width=7, fig.height=5}
 top10 <- head(VariableFeatures(epi), 10)
@@ -322,8 +387,8 @@ epi <- epi %>%
 epi$epi_clusters_harmony <- epi$seurat_clusters
 ```
 
-```{r, fig.width=10, fig.height=5}
-DimPlot(epi, reduction = "umap", group.by = c("seurat_clusters", "sample_name"), combine = T, ncol = 2, label = T)
+```{r, fig.width=10, fig.height=10}
+DimPlot(epi, reduction = "umap", group.by = c("epi_clusters", "sample_name", "tum_epi"), combine = T, ncol = 2, label = T)
 ```
 
 ```{r, fig.width=10, fig.height=7}
@@ -346,6 +411,57 @@ p1 <- dittoBarPlot(epi, var = "tum_epi", group.by = "sample_name", scale = "perc
 p2 <- dittoBarPlot(epi, var = "tum_epi", group.by = "sample_name", scale = "count")
 p1 / p2 + plot_layout(guides = "collect")
 ```
+
+
+### Save out for later processing
+
+```{r}
+saveRDS(epi, file = "epi_object.rds")
+```
+
+
+
+#### Fine clusters
+
+```{r}
+epi <- FindNeighbors(epi, annoy.metric = "euclidean", reduction = "harmony", graph.name = c("cosine_nn", "cosine_snn"), k.param = 10, prune.SNN = 0)
+
+epi$leiden <- factor(leiden_wrapper(adj_mat = epi@graphs$cosine_snn, resolution = 1))
+
+DimPlot(epi, reduction = "umap_harmony", group.by = c("leiden"), label = T)
+```
+
+```{r}
+library(bluster)
+epi_sce$cls <- scran::clusterCells(epi_sce, use.dimred = "HARMONY", BLUSPARAM=NNGraphParam(k=10, type="rank", cluster.fun="infomap"))
+
+dittoDimPlot(epi_sce, var = "cls", reduction.use = "UMAP_HARMONY", do.label = T, labels.size = 3, labels.highlight = F, labels.repel = F)
+
+```
+
+```{r}
+set.seed(0101010)
+epi_sce$cls <- scran::clusterCells(epi_sce, use.dimred="HARMONY",
+    BLUSPARAM=TwoStepParam(
+        first=KmeansParam(centers=2500),
+        second=NNGraphParam(k=5)
+    )
+)
+
+
+dittoDimPlot(epi_sce, var = "cls", reduction.use = "UMAP_HARMONY", do.label = T, labels.size = 3, labels.highlight = F, labels.repel = F)
+```
+
+
+```{r}
+hdbscanresults <- dbscan::hdbscan(epi@reductions$umap_harmony@cell.embeddings,
+      minPts = 30, 
+      gen_hdbscan_tree = FALSE,
+      gen_simplified_tree = FALSE,
+      verbose = TRUE
+    )
+```
+
 
 
 ### Epithelial cluster markers
@@ -371,9 +487,48 @@ to_plot <- epi_markers %>%
     slice_max(n = 3, order_by = avg_log2FC) %>%
   pull(gene)
 
-FeaturePlot(epi, features = to_plot, reduction = "umap_harmony", max.cutoff = "q99", ncol = 9) & NoLegend()
+FeaturePlot(epi, features = to_plot, reduction = "umap_harmony", max.cutoff = "q95", ncol = 7, label = T) & NoLegend()
 ```
 
+Cluster 3 looks proliferative
+
+```{r}
+epi <- CellCycleScoring(epi, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+
+FeaturePlot(epi, features = c("S.Score", "G2M.Score"), reduction = "umap_harmony", min.cutoff = "q1", max.cutoff = "q99", label = T)
+```
+
+
+```{r}
+VlnPlot(epi, features = c("S.Score", "G2M.Score"))
+```
+
+
+```{r, fig.width=5, fig.height=6}
+p1 <- epi@meta.data %>%
+  ggplot(aes(x = epi_clusters_harmony)) +
+  geom_bar(aes(fill = Phase), position = "fill") +
+  scale_fill_ptol()
+
+p2 <- epi@meta.data %>%
+  ggplot(aes(x = epi_clusters_harmony)) +
+  geom_bar(aes(fill = sample_name), position = "fill") +
+  scale_fill_ptol()
+
+p3 <- epi@meta.data %>%
+  ggplot(aes(x = epi_clusters_harmony)) +
+  geom_bar(aes(fill = tum_epi), position = "fill") +
+  scale_fill_ptol()
+
+p1 / p2 / p3
+```
+
+Proportion of each patients tumor cells in cluster 3
+
+```{r}
+epi@meta.data %>%
+  filter(tum_epi == "Tumor cell")
+```
 
 
 ## DEG analysis

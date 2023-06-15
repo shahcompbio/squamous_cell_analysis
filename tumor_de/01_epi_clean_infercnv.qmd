@@ -1,0 +1,179 @@
+---
+title: "Squamous Infer CNV Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: true
+---
+
+# Introduction
+
+Here we subset for suspected epithelial cells and run InferCNV
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(infercnv)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(anndata)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(here)
+library(bsub)
+
+```
+
+# InferCNV
+
+inferCNV requires:
+
+-   a raw counts matrix of single-cell RNA-Seq expression
+-   an annotations file which indicates which cells are tumor vs. normal.
+-   a gene/chromosome positions file
+
+### Gene order file
+
+Generate the gene order positional file
+
+```{r}
+#| echo: false
+overwrite <- FALSE
+attribute_type <- "gene_name"
+
+gene_order_file <- here("cnv", "infercnv", glue("gene_order_{attribute_type}.txt"))
+
+keep_chrs <- c(1:22)
+
+if (!file.exists(gene_order_file) & !overwrite) {
+  # Download the script from the github repo
+  gtf_to_position_py <- "https://raw.githubusercontent.com/broadinstitute/infercnv/master/scripts/gtf_to_position_file.py"
+
+  curl::curl_download(gtf_to_position_py, destfile = "gtf_to_position_file.py")
+
+  # Select the annotation gtf used by cellranger
+  cr_gtf <- "/work/shah/reference/transcriptomes/GRCh38/genes/genes.gtf"
+
+  stopifnot("Can't find gtf" = file.exists(cr_gtf))
+
+  # Run the conversion
+  system(glue("python gtf_to_position_file.py --attribute_name {attribute_type} {cr_gtf} {gene_order_file}"))
+
+  # Load the file and reorder and remove other chrs
+  gene_order <- read.table(file = gene_order_file, header = F, sep = "\t")
+  gene_order <- gene_order[gene_order$V2 %in% keep_chrs, ] %>%
+    arrange(as.numeric(V2), V3)
+  write.table(gene_order, file = gene_order_file, quote = F, sep = "\t", col.names = F, row.names = F)
+} else {
+  message(glue("{gene_order_file} already exists!"))
+}
+```
+
+### Load counts
+
+```{r}
+#| output: false
+srt <- readRDS(here("tumor_de", "results", "epithelial_object.rds"))
+
+
+adata <- read_h5ad("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops_with_cancer.h5ad")
+
+raw_counts <- adata$raw$to_adata()$X %>%
+  as(., "CsparseMatrix") %>%
+  t()
+
+rownames(raw_counts) <- adata$raw$to_adata()$var$features
+
+all(colnames(srt) %in% colnames(raw_counts))
+
+counts <- raw_counts[,colnames(srt)]
+
+```
+
+
+```{r}
+#| echo: false
+# Check for raw integer counts
+stopifnot("Must provide integer counts" = all(counts[, 1] - floor(counts[, 1]) == 0))
+```
+
+Get metadata
+
+```{r}
+metadata <- srt@meta.data %>%
+  rownames_to_column("cell_id") %>%
+  mutate(patient = sample_name) %>%
+  mutate(infercnv_meta = paste(patient, tum_epi, sep = "_"))
+rownames(metadata) <- metadata$cell_id
+
+# Ensure consistent order
+counts <- counts[,metadata$cell_id]
+```
+
+
+### InferCNV Initial run
+
+Run InferCNV
+
+```{r}
+out_dir <- here("tumor_de", "infercnv_epi", "results")
+
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+ref_group_names <- grep("epithelial", unique(metadata$infercnv_meta), value = T)
+
+infercnv_obj_final_file <- file.path(out_dir, "run.final.infercnv_obj")
+
+if (!file.exists(infercnv_obj_final_file)) {
+  bsub_chunk(
+    name = glue("squamous_epithelial_infercnv"),
+    image = TRUE,
+    hours = 24,
+    cores = 8,
+    memory = 16,
+    working_dir = out_dir,
+    output_dir = out_dir,
+    temp_dir = out_dir,
+    
+    code = {
+      infercnv_obj <- CreateInfercnvObject(
+        raw_counts_matrix = counts,
+        annotations_file = as.data.frame(metadata[, "infercnv_meta", drop = FALSE]),
+        delim = "\t",
+        gene_order_file = gene_order_file,
+        ref_group_names = ref_group_names
+      )
+
+      infercnv_obj <- infercnv::run(infercnv_obj,
+        cutoff = 0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+        out_dir = out_dir,
+        cluster_by_groups = TRUE,
+        denoise = TRUE,
+        HMM = F,
+        num_threads = 8,
+        leiden_method = "PCA",
+        leiden_resolution = 0.05,
+        no_prelim_plot = TRUE,
+        save_rds = FALSE,
+        analysis_mode = "subclusters",
+        resume_mode = TRUE
+      )
+      
+      devtools::session_info()
+    }
+  )
+} else {
+  message("Already done")
+}
+
+
+```

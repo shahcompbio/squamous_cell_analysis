@@ -1,0 +1,266 @@
+---
+title: "EGFR Infer CNV Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: false
+---
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(anndata)
+library(SingleCellExperiment)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(here)
+devtools::load_all("~/repos/scatools")
+```
+
+
+```{r}
+srt <- readRDS(here("tumor_de", "results", "epithelial_object.rds"))
+```
+
+
+Rebin the counts into a `SingleCellExperiment` binned at 10mb
+
+```{r}
+bins <- get_tiled_bins(bs_genome = BSgenome.Hsapiens.UCSC.hg38::BSgenome.Hsapiens.UCSC.hg38, tilewidth = 1e7, respect_chr_arms = TRUE)
+
+
+# Get all gene ordering
+gene_order <- read.table(file = here("cnv", "infercnv", "gene_order_gene_name.txt"), col.names = c("gene", "chr", "start", "end"))
+rownames(gene_order) <- gene_order$gene
+results_dir <- here("tumor_de", "infercnv_epi", "results")
+
+sce_rb_f <- file.path(results_dir, "sce_10mb.rds")
+
+if (file.exists(sce_rb_f)) {
+  message("Final out found")
+  next
+}
+infercnv_obj_f <- file.path(results_dir, "run.final.infercnv_obj")
+
+if (file.exists(infercnv_obj_f)) {
+  counts <- readRDS(infercnv_obj_f)@expr.data
+} else {
+  logger::log_warn("Missing final infercnv results")
+  next
+}
+
+sce <- SingleCellExperiment(list("counts" = counts), 
+                            rowRanges = makeGRangesFromDataFrame(gene_order[rownames(counts), ], keep.extra.columns = T),
+                            colData = DataFrame(srt@meta.data[colnames(counts),]))
+
+
+sce_rb <- rebin_sce(sce = sce, assays = "counts", new_bins = bins, ncores = 8)
+
+# sce_rb <- cluster_seurat(sce_rb, assay_name = "counts", algorithm = "leiden", umap.metric = "euclidean", annoy.metric = "euclidean", resolution = 0.4, suffix = "_epi_cohort")
+
+
+sce <- cluster_seurat(sce, assay_name = "counts", algorithm = "leiden", umap.metric = "euclidean", annoy.metric = "euclidean", resolution = 0.4, suffix = "_epi_cohort")
+
+# Take clusters from the full data, plotted the 10mb rebin data
+sce_rb$clusters_epi_cohort <- sce$clusters_epi_cohort
+
+reducedDim(sce_rb, "UMAP_epi_cohort") <- reducedDim(sce, "UMAP_epi_cohort")
+
+```
+
+
+```{r, fig.width=11, fig.height=4}
+p1 <- dittoDimPlot(sce_rb, var = "clusters_epi_cohort", reduction.use = "UMAP_epi_cohort", do.label = T, labels.highlight = T)
+
+p2 <- dittoDimPlot(sce_rb, var = "sample_name", reduction.use = "UMAP_epi_cohort", do.label = F)
+
+p1 | p2
+
+```
+
+```{r}
+colData(sce_rb) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = clusters_epi_cohort)) +
+  geom_bar(aes(fill = sample_name), position = "fill") +
+  scale_fill_manual(values = dittoColors())
+```
+
+
+Annotate tumor and normal cells
+
+```{r}
+normal_cls <- c(1, 3, 6)
+
+sce_rb$is_tumor_cell <- !sce_rb$clusters_epi_cohort %in% normal_cls
+```
+
+
+
+Publication qual plots
+
+```{r, fig.height=7, fig.width=9}
+p1 <- dittoDimPlot(sce_rb, var = "clusters_epi_cohort", reduction.use = "UMAP_epi_cohort", do.label = F)
+
+p2 <- dittoDimPlot(sce_rb, var = "sample_name", reduction.use = "UMAP_epi_cohort", do.label = F, colors = )
+
+p3 <- dittoDimPlot(sce_rb, var = "is_tumor_cell", reduction.use = "UMAP_epi_cohort", do.label = F)
+
+p4 <- colData(sce_rb) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = clusters_epi_cohort)) +
+  geom_bar(aes(fill = sample_name), position = "fill") +
+  scale_fill_manual(values = dittoColors())
+
+p1 + p2 + p3 + p4 + plot_layout(ncol = 2)
+```
+
+
+```{r, fig.width = 8, fig.height = 10}
+p1 <- colData(sce_rb) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = sample_name)) +
+  geom_bar(aes(fill = is_tumor_cell), position = "fill") + 
+  labs(x = "Sample", y = "Proportion of epithelial cells", fill = "Tumor Cell")
+
+p2 <- colData(sce_rb) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = sample_name, fill = is_tumor_cell)) +
+  geom_bar(position = "dodge") + 
+  labs(x = "Sample", y = "Number of cells", fill = "Tumor Cell") +
+  geom_text(aes(label = ..count..), stat = "count", vjust=-0.3, position = position_dodge(width=0.9))
+
+p1 + p2 + plot_layout(guides = "collect", ncol = 1)
+```
+
+
+```{r}
+cloneCnaHeatmap(sce_rb, clone_name = "clusters_epi_cohort", log2 = T, col_fun = logr_col_fun(breaks = c(-0.1, -0.01, 0.01, 0.1), colors = c("blue", "white", "white", "red")), cluster_row_slices = T, col_clones = dittoColors())
+```
+
+
+
+
+```{r}
+library(ComplexHeatmap)
+# Get metadata and order cells
+df_meta <- colData(sce_rb) %>% as.data.frame() %>%
+  # arrange(desc(tumor_cell), desc(clusters_patient_lab)) %>%
+  # mutate(sample_short = str_to_upper(str_sub(sample_name, 1, 5))) %>%
+  mutate(row_label = case_when(
+    is_tumor_cell == TRUE ~ paste(sample_name),
+    .default = "Normal"
+  )) %>%
+  add_count(row_label)
+# mat <- t(assay(sce_tissue[,df_meta$cell_id], "counts"))
+chrs <- as.vector(gsub("chr", "", GenomeInfoDb::seqnames(SummarizedExperiment::rowRanges(sce_rb))))
+col_split <- factor(chrs, levels = unique(gtools::mixedsort(chrs)))
+# matlog2 <- log2(mat)
+
+idx <- 1:ncol(sce_rb)
+# df_meta <- df_meta[idx,]
+    
+left_annot <- ComplexHeatmap::HeatmapAnnotation(
+  "Tumor Cell" = sce_rb[, idx]$is_tumor_cell,
+  "Sample" = sce_rb[, idx]$sample_name,
+  col = list(
+    "Tumor Cell" = c("TRUE" = "red", 
+                     "FALSE" = "blue")
+    ),
+  which = "row"
+  )
+    
+ht <- Heatmap(matrix = t(log2(assay(sce_rb))),
+        left_annotation = left_annot,
+        name = "log2ratio",
+        show_row_names = FALSE,
+        cluster_columns = FALSE,
+        show_column_names = FALSE,
+        cluster_rows = TRUE,
+        column_split = col_split,
+        raster_device = "CairoPNG",
+        border = TRUE,
+        raster_by_magick = FALSE,
+        row_split = df_meta$row_label,
+        row_title_rot = 0,
+        col = logr_col_fun(breaks = c(-0.1, -0.02, 0.02, 0.1), colors = c("blue", "white", "white", "red")),
+        show_parent_dend_line = FALSE,
+        show_row_dend = FALSE, cluster_row_slices = F, raster_quality = 15
+        
+        )
+pdf("plots/cohort_cnv_heatmap_refined.pdf", width = 11, height = 8.5)
+draw(ht)
+dev.off()
+```
+
+
+Export new calls
+
+```{r}
+colData(sce_rb) %>%
+  as.data.frame() %>%
+  rownames_to_column("cell_id") %>%
+  select(cell_id, is_tumor_cell) %>%
+  write.table(file = "results/tumor_cell_calls.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+
+Iteratively subcluster each samples tumors to find subclonal pops
+
+```{r}
+map(sort(unique(sce_rb$sample_name)), \(samp) {
+  
+  cls_name <- glue("clusters_{samp}_tumor")
+  umap_name <- glue("UMAP_{samp}_tumor")
+  
+  sc_samp <- sce[,sce$sample_name == samp & !sce$clusters_epi_cohort %in% normal_cls]
+  
+  sc_samp <- cluster_seurat(sc_samp, assay_name = "counts", algorithm = "leiden", umap.metric = "euclidean", annoy.metric = "euclidean", resolution = 1, suffix = glue("_{samp}_tumor"))
+  
+  sc_samp_rb <- sce_rb[,sce$sample_name == samp & !sce$clusters_epi_cohort %in% normal_cls]
+  
+  colData(sc_samp_rb)[,cls_name] <- colData(sc_samp)[,cls_name]
+
+  reducedDim(sc_samp_rb, umap_name) <- reducedDim(sc_samp, umap_name)
+
+  cls_umap <- dittoDimPlot(sc_samp_rb, var = cls_name, reduction.use = umap_name, do.label = T)
+  
+  cls_cnv_heatmap <- cnaHeatmap(sc_samp_rb, 
+                                assay_name = "counts", 
+                                clone_name = cls_name,
+                                log2 = T, 
+                                col_fun = logr_col_fun(breaks = c(-0.1, -0.01, 0.01, 0.1), 
+                                                       colors = c("blue", "white", "white", "red")), 
+                                cluster_row_slices = T, 
+                                # cluster_cells = T,
+                                col_clones = dittoColors()
+                                )
+  
+    cls_cnv_heatmap_clone <- cloneCnaHeatmap(sc_samp_rb, 
+                                assay_name = "counts", 
+                                clone_name = cls_name,
+                                log2 = T, 
+                                col_fun = logr_col_fun(breaks = c(-0.1, -0.01, 0.01, 0.1), 
+                                                       colors = c("blue", "white", "white", "red")), 
+                                cluster_row_slices = T, 
+                                # cluster_cells = T,
+                                col_clones = dittoColors()
+                                )
+  
+  cls_cnv_heatmap
+  
+})
+```
+
