@@ -1,0 +1,244 @@
+---
+title: "Cellchat"
+author: "Mobina Kazemi"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: false
+---
+
+```{r setup}
+#| output: false
+library(NMF)
+library(circlize)
+library(ComplexHeatmap)
+library(BiocNeighbors)
+library(CellChat)
+library(tidyverse)
+library(anndata)
+library(ggthemes)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(here)
+library(patchwork)
+library(reticulate)
+library(future)
+
+
+```
+
+```{r}
+adata_Full<-read_h5ad("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops_with_cancer.h5ad")
+
+epithelial_cell_clusters<-read.delim("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/epithelial_cell_clusters.txt")
+adata_Full$obs$celltype=adata_Full$obs$genevector_l2
+adata_Full$obs$celltype<-as.character(adata_Full$obs$celltype)
+adata_Full$obs[epithelial_cell_clusters$cell_id[which(epithelial_cell_clusters$is_tumor_cell==F)],20]<-"Non malignant epithelial"
+adata_Full$obs[epithelial_cell_clusters$cell_id[which(epithelial_cell_clusters$is_tumor_cell==T)],20]<-"Cancer"
+adata_Full$obs$cellt<- gsub(pattern = "Non.malignant.epithelial", replacement = "Non_malignant_epithelial", df$celltype_pair)
+
+write_h5ad(anndata = adata_Full,filename="/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops_with_cancer.h5ad")
+```
+
+
+```{r}
+adata_Full<-read_h5ad("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops_with_cancer.h5ad")
+adata_Full<-adata_Full[adata_Full$obs$celltype!="Epithelial"]
+adata_Full<-adata_Full[adata_Full$obs$celltype!="Unknown"]
+
+
+counts <- adata_Full$X %>%
+  as(., "CsparseMatrix") %>%
+  t()
+
+colnames(counts) <- rownames(adata_Full$obs)
+rownames(counts) <- rownames(adata_Full$var)
+
+squamous_seurat <- CreateSeuratObject(counts, project = "SeuratProject", assay = "RNA",
+  min.cells = 0, min.features = 0, names.field = 1,
+  names.delim = "_", meta.data = NULL)
+
+# Set the expression assay
+squamous_seurat <- SetAssayData(squamous_seurat, "data", counts)
+
+# Add observation metadata
+squamous_seurat <- AddMetaData(squamous_seurat, adata_Full$obs)
+
+# Add fetaure metadata
+for(i in colnames(adata_Full$var)){
+squamous_seurat[["RNA"]][[i]] <- adata_Full$var[i]
+}
+
+
+```
+
+
+```{r}
+Idents(object=squamous_seurat) <- "celltype"
+table(squamous_seurat@meta.data$celltype)
+```
+
+
+#cellchat
+```{r}
+data.input <- GetAssayData(squamous_seurat, assay = "RNA", slot = "data") # normalized data matrix
+labels <- Idents(squamous_seurat)
+meta <- data.frame(group = labels, row.names = names(labels)) # create a dataframe of the cell labels
+```
+
+#creat cellchat object
+```{r}
+colnames(meta)<-"labels"
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+```
+
+#database
+```{r}
+CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+showDatabaseCategory(CellChatDB)
+```
+
+```{r}
+dplyr::glimpse(CellChatDB$interaction)
+#use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+```
+
+```{r}
+# subset the expression data of signaling genes for saving computation cost
+cellchat <- subsetData(cellchat) # This step is necessary even if using the whole database
+future::plan("multisession", workers = 4) # do parallel
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+# project gene expression data onto PPI (Optional: when running it, USER should set `raw.use = FALSE` in the function `computeCommunProb()` in order to use the projected data)
+# cellchat <- projectData(cellchat, PPI.human)
+```
+
+
+```{r}
+cellchat <- computeCommunProb(cellchat,raw.use = TRUE)
+
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+```
+
+```{r}
+#,slot.name = "netP"
+df.net <- subsetCommunication(cellchat)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+```
+
+#Visualization
+```{r}
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+pdf("../Cellchat/squamous_results/squamous_count_strength.pdf",width = 5,height = 5)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+dev.off()
+```
+
+```{r}
+mat <- cellchat@net$weight
+pdf("../Cellchat/squamous_results/squamous_netVisual_circle.pdf",width = 15,height = 15)
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i],)
+}
+dev.off()
+```
+
+
+```{r}
+pathways.show <- c("TGFb") 
+# Hierarchy plot
+# Here we define `vertex.receive` so that the left portion of the hierarchy plot shows signaling to fibroblast and the right portion shows signaling to immune cells 
+vertex.receiver = seq(2) # a numeric vector. 
+netVisual_aggregate(cellchat, signaling = pathways.show,  vertex.receiver = vertex.receiver)
+# Circle plot
+par(mfrow=c(1,1))
+pdf("../Cellchat/squamous_results/squamous_TGFb_signaling.pdf",width = 10,height = 10)
+netVisual_aggregate(cellchat, signaling = pathways.show, layout = "circle")
+dev.off()
+```
+```{r}
+# Heatmap
+par(mfrow=c(1,1))
+pdf("../Cellchat/squamous_results/squamous_TGFb_heatmap.pdf",width = 10,height = 10)
+netVisual_heatmap(cellchat, signaling = pathways.show, color.heatmap = "Reds")
+dev.off()
+```
+
+```{r}
+mat <- cellchat@net$count
+pdf("../Cellchat/squamous_results/squamous_netVisual_circle_count.pdf",width = 15,height = 15)
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+dev.off()
+```
+
+
+
+```{r}
+df<-cellchat@net$count
+df<-as.data.frame(df)
+Data_count<-matrix(data = 0,nrow = 1,ncol = 3)
+Data_count<-as.data.frame(Data_count)
+colnames(Data_count)<-c("sender","receiver","count")
+for(i in 1:nrow(df)){
+  for(j in 1:ncol(df)){
+    a<-c(rownames(df)[i],colnames(df)[j],cellchat@net$count[i,j])
+    a<-as.data.frame(a)
+    a<-t(a)
+    colnames(a)<-colnames(Data_count)
+  Data_count<-rbind(Data_count,a)
+}
+}
+Data_count<-Data_count[-1,]
+Data_count$count<-as.numeric(Data_count$count)
+
+
+
+pdf("../Cellchat/squamous_results/squamous_heatmap_count.pdf",width = 5,height = 5)
+ggplot(Data_count, aes(x =sender ,
+                         y = receiver,
+                         fill = count))+geom_tile()+scale_fill_gradient(low = "white", high = "brown")+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+theme(axis.text.y = element_text(vjust = 1, hjust=1))+ggtitle("Heatmap_Count_of_interaction")  
+dev.off()
+
+```
+```{r}
+netAnalysis_contribution(cellchat, signaling = pathways.show)
+```
+
+```{r}
+# show all the significant interactions (L-R pairs) from some cell groups (defined by 'sources.use') to other cell groups (defined by 'targets.use')
+pdf("../Cellchat/squamous_results/squamous_bubble_plot.pdf",width =25,height = 40)
+netVisual_bubble(cellchat, remove.isolate = FALSE)
+dev.off()
+```
+```{r}
+pdf("../Cellchat/squamous_results/squamous_signaling_genes_for_significant_communications.pdf",width = 10,height = 10)
+plotGeneExpression(cellchat, signaling = "TGFb")
+dev.off()
+```
+
