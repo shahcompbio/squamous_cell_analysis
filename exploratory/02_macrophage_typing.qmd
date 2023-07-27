@@ -1,0 +1,336 @@
+---
+title: "Squamous Tumor DEG Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+# Introduction
+
+Reprocessing the squamous dataset
+
+```{r setup}
+#| output: false
+library(tidyverse)
+# library(zellkonverter)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(patchwork)
+library(Seurat)
+library(here)
+
+options(Seurat.object.assay.version = "v5")
+```
+
+Load data
+
+```{r}
+srt <- readRDS("squamous_cohort_celltyped.rds")
+```
+
+
+## Macrophages
+
+Pull out and subphenotype macrophages
+
+```{r}
+FeaturePlot(srt[,srt$cell_type_coarse == "Macrophage"], reduction = "umap_harmony", features = c("LYZ", "AIF1"))
+```
+
+
+```{r}
+cell_col = "cell_type_coarse"
+cell_type = "Macrophage"
+
+srt$macrophage <- srt@meta.data %>%
+  mutate(macrophage = case_when(
+    cell_type_coarse == "Macrophage" & 
+      predicted.ann_level_1 == "Immune" & 
+      predicted.ann_level_2 == "Myeloid" &
+      predicted.ann_level_3 %in% c("Dendritic cells", "Macrophages", "Monocytes") ~ TRUE,
+    .default = F
+  )) %>%
+  pull(macrophage)
+
+resolution = 0.5
+k.param = 5
+n.neighbors = 20
+dims = 1:30
+
+# subcluster_cells <- function(srt, cell_col, cell_type, k.param = 10, n.neighbors = 20, dims = 1:20, resolution = 1) {
+  
+  # srt_cls <- srt[,srt[[cell_col]] == cell_type] %>%
+  srt_cls <- srt[,srt$macrophage] %>%
+    FindVariableFeatures() %>%
+    ScaleData(vars.to.regress = "percent.mt") %>%
+    RunPCA() %>%
+    IntegrateLayers(method = HarmonyIntegration, orig.reduction = "pca", new.reduction = "harmony", group.by = "sample_id", max.iter.harmony = 20) %>%
+  FindNeighbors(reduction = "harmony", dims = dims, graph.name = c("harmony.nn", "harmony.snn"), k.param = k.param) %>%
+  RunUMAP(dims = dims, reduction = "harmony", reduction.name = "umap_harmony", n.neighbors = n.neighbors) %>% 
+  FindClusters(resolution = resolution, graph.name = "harmony.snn", cluster.name = "clusters_harmony")
+  
+  srt_cls$clusters_harmony_leiden <- factor(scatools::leiden_wrapper(srt_cls@graphs$harmony.snn, resolution = 0.5))
+
+  
+  # return(srt_cls)
+# }
+```
+
+
+## Macrophage deep dive
+
+```{r}
+# macro <- subcluster_cells(srt, cell_col = "cell_type_coarse", cell_type = "Macrophage", k.param = 10, n.neighbors = 20, dims = 1:30, resolution = 0.4)
+```
+
+```{r}
+DimPlot(srt[,srt$macrophage], reduction = "umap_harmony")
+```
+
+
+```{r}
+macro <- srt_cls
+p1 <- DimPlot(macro, reduction = "umap_harmony", group.by = "clusters_harmony_leiden", cols = dittoColors(), label = T, label.box = F)
+p1
+```
+
+```{r}
+Idents(macro) <- "clusters_harmony_leiden"
+markers_macro <- FindAllMarkers(macro, only.pos = T, max.cells.per.ident = 500)
+```
+
+
+```{r, fig.width = 5, fig.height = 4}
+Idents(macro) <- "clusters_harmony_leiden"
+
+macro_markers <- c("LYZ", "AIF1", "FCER1G", "TYROBP", "MS4A6A")
+
+feature_dotplot <- DotPlot(macro, features = macro_markers, assay = "RNA", scale = F, cluster.idents = F, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+```
+
+
+Plot top cluster markers
+
+```{r, fig.width = 12, fig.height=5}
+markers_plot <- markers_macro %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 6) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+
+
+feature_dotplot <- DotPlot(macro, features = to_plot, assay = "RNA", scale = T, cluster.idents = F, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+```{r, fig.width = 14, fig.height = 8}
+p1 <- DimPlot(macro, reduction = "umap_harmony", group.by = "clusters_harmony_leiden", cols = dittoColors(), label = T, label.box = T)
+
+Idents(macro) <- "clusters_harmony_leiden"
+
+macro_markers <- c("LYZ", "AIF1", "FCER1G", "TYROBP", "MS4A6A")
+
+feature_dotplot <- DotPlot(macro, features = macro_markers, assay = "RNA", scale = F, cluster.idents = F, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+p2 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+markers_plot <- markers_macro %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 6) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+
+
+feature_dotplot <- DotPlot(macro, features = to_plot, assay = "RNA", scale = T, cluster.idents = F, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+p3 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+
+pcomb <- ((p1 | p2) / p3) + plot_annotation(title = "Macrophage compartment subclustering", theme = theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold")))
+pcomb
+```
+
+
+```{r}
+# macro[["percent.ribo"]] <- PercentageFeatureSet(macro, pattern = "^RP[SL]")
+```
+
+
+Dump out marker list (only sig)
+
+```{r}
+markers_macro %>%
+  # filter(p_val_adj < 0.05) %>%
+  write.table("macro_cluster_markers.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+
+```{r}
+markers_new <-  c("VCAN", "SLC11A1", "S100A8", "S100A9", "CSF3R", "MARCO", "MAFB", "SPP1", "CD44", "ALOX5AP", "SELL", "PTGS2", "CCL20", "IL1RN", "CD14", "CD163", "TREM2", "PPARG")
+```
+
+```{r, fig.width = 8, fig.height=3}
+feature_dotplot <- DotPlot(macro, features = markers_new, assay = "RNA", scale = F, cluster.idents = F, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+Assign cell identities
+
+```{r}
+coarse_cluster_map_macro <- c(
+  "1" = "Neutrophil? (exclude)",
+  "2" = "MoMac 1",
+  "3" = "Macrophage (classic)",
+  "4" = "DC2",
+  "5" = "Macrophage (complement)",
+  "6" = "MoMac 2",
+  "7" = "Macrophage (cycling)",
+  "8" = "DCreg",
+  "9" = "DC1",
+  "10" = "Macrophage (MThi)",
+  "11" = "KRThi (exclude)"
+)
+
+
+macro@meta.data$macrophage_subtype <- coarse_cluster_map_macro[match(macro@meta.data$clusters_harmony_leiden, names(coarse_cluster_map_macro))]
+
+# srt$cell_type_coarse <- factor(srt$cell_type_coarse, levels = sort(unique(srt$cell_type_coarse)))
+```
+
+
+```{r, fig.width = 8, fig.height=3}
+feature_dotplot <- DotPlot(macro, features = markers_new, assay = "RNA", scale = F, cluster.idents = F, group.by = "macrophage_subtype", col.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+
+```{r, fig.width = 14, fig.height = 8}
+p1 <- DimPlot(macro, reduction = "umap_harmony", group.by = "macrophage_subtype", cols = dittoColors(), label = F, label.box = T)
+
+Idents(macro) <- "clusters_harmony_leiden"
+
+macro_markers <- c("LYZ", "AIF1", "FCER1G", "TYROBP", "MS4A6A")
+
+feature_dotplot <- DotPlot(macro, features = macro_markers, assay = "RNA", scale = F, cluster.idents = F, group.by = "macrophage_subtype", col.min = 0) + guides(x = guide_axis(angle = 90))
+p2 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+markers_plot <- markers_macro %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 6) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+
+
+feature_dotplot <- DotPlot(macro, features = to_plot, assay = "RNA", scale = T, cluster.idents = F, group.by = "macrophage_subtype", col.min = 0) + guides(x = guide_axis(angle = 90))
+p3 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+
+pcomb <- ((p1 | p2) / p3) + plot_annotation(title = "Macrophage compartment subclustering", theme = theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold")))
+pcomb
+```
+
+
+```{r, fig.width = 11, fig.height=6}
+#DC2 markers
+FeaturePlot(macro, features = c("CD1C", "FCER1A", "PKIB", "CD68"), reduction = "umap_harmony", max.cutoff = "q99", order = T, label = T)
+VlnPlot(macro, features = c("CD1C", "FCER1A", "PKIB"), group.by = "macrophage_subtype")
+```
+
+Coarse macrophage clusters
+
+```{r}
+# Remove the excluded stuff
+macro <- macro[,!grepl("exclude", x = macro$macrophage_subtype)]
+
+macro$macrophage_subtype_coarse <- macro@meta.data %>%
+  mutate(macrophage_subtype_coarse = case_when(
+    grepl("cycling", macrophage_subtype) ~ "Macrophage (cycling)",
+    grepl("Macrophage", macrophage_subtype) ~ "Macrophage",
+    .default = macrophage_subtype
+  )) %>%
+  pull(macrophage_subtype_coarse) %>%
+  factor()
+
+```
+
+Coarse markers
+
+```{r}
+Idents(macro) <- "macrophage_subtype_coarse"
+markers_macro_coarse <- FindAllMarkers(macro, only.pos = T, max.cells.per.ident = 500)
+```
+
+```{r}
+markers_macro_coarse %>%
+  # filter(p_val_adj < 0.05) %>%
+  write.table("macro_cluster_markers_coarse.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+```{r, fig.width = 11, fig.height = 8}
+p1 <- DimPlot(macro, reduction = "umap_harmony", group.by = "macrophage_subtype_coarse", cols = dittoColors(), label = F, label.box = T)
+
+Idents(macro) <- "macrophage_subtype_coarse"
+
+macro_markers <- c("LYZ", "AIF1", "FCER1G", "TYROBP", "MS4A6A")
+
+feature_dotplot <- DotPlot(macro, features = macro_markers, assay = "RNA", scale = F, cluster.idents = F, group.by = "macrophage_subtype_coarse", col.min = 0) + guides(x = guide_axis(angle = 90))
+p2 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+markers_plot <- markers_macro_coarse %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 6) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+
+# to_plot$DCreg <- append(to_plot$DCreg, "CCR7")
+
+feature_dotplot <- DotPlot(macro, features = to_plot, assay = "RNA", scale = T, cluster.idents = F, group.by = "macrophage_subtype_coarse", col.min = 0) + guides(x = guide_axis(angle = 90))
+p3 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+
+pcomb <- ((p1 | p2) / p3) + plot_annotation(title = "Macrophage compartment clustering", theme = theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold")))
+pcomb
+```
+
+Save out objects and calls
+
+```{r}
+saveRDS(macro, file = "squamous_cohort_celltyped_macro.rds")
+
+# Convert to h5ad and save
+sce <- as.SingleCellExperiment(macro)
+sce$ident <- NULL
+
+adata <- zellkonverter::SCE2AnnData(sce, X_name = "logcounts")
+anndata::write_h5ad(adata, filename = "squamous_cohort_celltyped_macro.h5ad")
+```
+
+
+
+### TODO
+
+1. Score metaprograms in the macrophages
+2. CITE analysis (CD4 CD8 T cells)
+    * Check Mac2 (neutrophil?) cluster
+3. Revisit cell interaction analysis
+

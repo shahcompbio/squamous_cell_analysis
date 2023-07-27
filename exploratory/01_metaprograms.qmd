@@ -1,0 +1,141 @@
+---
+title: "Metaprogram Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+# Introduction
+
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(ggthemes)
+library(ggsci)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(patchwork)
+library(SingleCellExperiment)
+library(Seurat)
+library(ggbeeswarm)
+library(msigdbr)
+# library(GSVA)
+library(readxl)
+library(UCell)
+library(here)
+
+
+options(Seurat.object.assay.version = "v5")
+
+theme_set(theme_classic())
+```
+
+## Load Data
+
+```{r}
+srt <- readRDS(here("exploratory", "squamous_cohort_celltyped.rds"))
+```
+
+## Score metaprograms
+
+### Load metaprograms
+
+```{r}
+meta_programs_df <- read.table(file = "~/work/references/meta_programs_tirosh/tirosh_mp_patched.txt", header = T, sep = "\t")
+
+meta_programs <- split(meta_programs_df, meta_programs_df$cell_type)
+
+meta_programs <- map(meta_programs, .f = function(x) {
+  res <- split(x, x$meta_program)
+  map(res, .f = function(y) y$Gene)
+})
+
+names(meta_programs) <- janitor::make_clean_names(names(meta_programs))
+```
+
+### Format seurat object
+
+Need names to match the metaprogram cell types and remove others
+
+```{r}
+srt$cell_type <- srt@meta.data %>%
+  mutate(cell_type = case_when(
+    cell_type_coarse_cancer == "Cancer" ~ "malignant",
+    grepl("Epithelial", cell_type_coarse_cancer) ~ "epithelial",
+    grepl("pDCs|Mast cell|Macrophage", cell_type_coarse_cancer) ~ "macrophages",
+    cell_type_coarse_cancer == "Fibroblast" ~ "fibroblasts",
+    cell_type_coarse_cancer == "Endothelial" ~ "endothelial",
+    cell_type_coarse_cancer %in% c("B-Cell", "Plasma") ~ "b_cells",
+    genevector == "CD4" ~ "cd4_t_cells",
+    genevector == "CD8" ~ "cd8_t_cells",
+    .default = "exclude"
+  )) %>%
+  pull(cell_type)
+```
+
+### Perform scoring
+
+```{r}
+overwrite <- F
+recompute_ranks <- F
+library(UCell)
+
+ucell_ranks <- "results/ucell_gene_ranks.rds"
+
+# Loop over all the mp cell types, scoring the pathways and storing results
+# Compute ranks for all cells if not already done. Load if done
+if (!file.exists(ucell_ranks) | recompute_ranks) {
+  set.seed(123)
+  count_mat <- as(srt[["RNA"]]$data, Class = "dgCMatrix")
+  ranks <- StoreRankings_UCell(count_mat, ncores = 8)
+  saveRDS(ranks, file = ucell_ranks)
+} else {
+  logger::log_info("Ucell ranks already completed...Loading...")
+  ranks <- readRDS(ucell_ranks)
+}
+
+
+cell_types <- c(
+  "b_cells", "endothelial", "epithelial", "fibroblasts",
+  "macrophages", "malignant", "cd4_t_cells", "cd8_t_cells"
+)
+
+walk(cell_types, .f = function(ct) {
+  mp_out <- glue("results/{ct}_mps.txt.gz")
+
+  if (!file.exists(mp_out) | overwrite) {
+    logger::log_info("Scoring {ct}")
+
+    # Get cell ids of the ct of interest
+    cell_ids <- srt[, srt$cell_type == ct]$cell_id
+
+    mps <- meta_programs[[ct]]
+
+    scores <- ScoreSignatures_UCell(
+      features = mps,
+      name = NULL,
+      ncores = 8,
+      precalc.ranks = ranks[, cell_ids]
+    )
+
+    scores %>%
+      as.data.frame() %>%
+      rownames_to_column("cell_id") %>%
+      write.table(file = gzfile(mp_out), quote = F, sep = "\t", row.names = F, col.names = T)
+
+    logger::log_success("Done!")
+  } else {
+    logger::log_info("{ct} already completed!")
+  }
+})
+```

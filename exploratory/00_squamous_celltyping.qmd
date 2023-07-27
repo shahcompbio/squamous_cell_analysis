@@ -1,0 +1,431 @@
+---
+title: "Squamous Tumor DEG Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+# Introduction
+
+Reprocessing the squamous dataset
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(anndata)
+library(reticulate)
+use_condaenv("scanpy_new")
+# library(zellkonverter)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(patchwork)
+library(zellkonverter)
+library(SingleCellExperiment)
+library(Seurat)
+library(SeuratDisk)
+library(here)
+
+options(Seurat.object.assay.version = "v5")
+```
+
+## Load Data
+
+```{r}
+srt_raw <- LoadH5Seurat("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/Final_data.h5seurat")
+srt_raw
+```
+
+
+```{r}
+adata <- read_h5ad("/work/shah/users/Mobina/Projects/Project_Squamous/Squamousdata/adata_Full_genevector_from_top_with_subpops.h5ad")
+adata
+sce <- AnnData2SCE(adata)
+
+cells <- colnames(sce)
+
+raw_counts <- srt_raw[,cells][["RNA"]]$counts
+
+srt <- CreateSeuratObject(counts = raw_counts, meta.data = as.data.frame(colData(sce)))
+
+rm(srt_raw)
+rm(sce)
+rm(adata)
+```
+
+
+```{r}
+srt[["percent.mt"]] <- PercentageFeatureSet(srt, pattern = "^MT-")
+
+srt[,srt$percent.mt < 20]
+
+srt <- srt %>%
+  NormalizeData() %>%
+  FindVariableFeatures() %>%
+  ScaleData(vars.to.regress = "percent.mt") %>%
+  RunPCA()
+```
+
+```{r}
+srt <- CellCycleScoring(srt, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+```
+
+
+```{r}
+DimPlot(srt, reduction = "pca", group.by = "Phase")
+FeaturePlot(srt, reduction = "pca", features = "percent.mt", order = T, max.cutoff = "q99")
+```
+
+
+
+```{r}
+ srt <- srt %>%
+  RunUMAP(dims = 1:20) %>%
+  FindNeighbors(dims = 1:20) %>%
+  FindClusters(resolution = 0.25)
+```
+
+```{r}
+# library(scSHC)
+# library(bsub)
+# 
+# overwrite = TRUE
+# 
+# work_dir <- here("exploratory")
+# 
+# if (!file.exists("clusters.rda") | overwrite) {
+#   bsub_chunk(name = "scshc", image = T, hours = 8, memory = 16, cores = 16, working_dir = work_dir, temp_dir = work_dir, output_dir = work_dir, code = {
+#   clusters <- scSHC(srt[["RNA"]]$counts, parallel = TRUE, cores = 16, batch = NULL, alpha = 0.2, num_PCs = 20, num_features = 2000)
+#   saveRDS(clusters, file = "clusters.rda")
+# })
+# }
+```
+
+
+```{r}
+srt <- srt %>%
+  IntegrateLayers(method = HarmonyIntegration, orig.reduction = "pca", new.reduction = "harmony", group.by = "orig.ident", max.iter.harmony = 20) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30, graph.name = c("harmony.nn", "harmony.snn")) %>%
+  RunUMAP(dims = 1:30, reduction = "harmony", reduction.name = "umap_harmony") %>% 
+  FindClusters(resolution = 0.25, graph.name = "harmony.snn", cluster.name = "clusters_harmony")
+```
+
+
+
+```{r, fig.width=8, fig.height=15}
+p1 <- DimPlot(srt, group.by = "seurat_clusters")
+p2 <- DimPlot(srt, group.by = "genevector")
+p3 <- DimPlot(srt, group.by = "orig.ident")
+
+p1 + p2 + p3 + plot_layout(ncol = 1)
+```
+
+
+
+```{r, fig.width=8, fig.height=15}
+p1 <- DimPlot(srt, reduction = "umap_harmony", group.by = "seurat_clusters")
+p2 <- DimPlot(srt, reduction = "umap_harmony", group.by = "genevector")
+p3 <- DimPlot(srt, reduction = "umap_harmony", group.by = "orig.ident")
+
+p1 + p2 + p3 + plot_layout(ncol = 1)
+```
+
+```{r, fig.width=12, fig.height=12}
+dittoDimPlot(srt, var = "genevector", reduction.use = "umap", split.by = "genevector")
+```
+
+
+
+```{r, fig.width=12, fig.height=12}
+dittoDimPlot(srt, var = "genevector", reduction.use = "umap_harmony", split.by = "genevector")
+
+```
+
+
+```{r}
+DimPlot(srt, reduction = "umap_harmony", group.by = "clusters_harmony", label = T)
+```
+
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, var = "clusters_harmony", reduction.use = "umap_harmony", split.by = "clusters_harmony", size = 0.1)
+
+```
+
+
+```{r, fig.height=12, fig.width=12}
+srt$clusters_harmony_leiden <- factor(scatools::leiden_wrapper(srt@graphs$harmony.snn, resolution = 0.25))
+```
+
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, var = "clusters_harmony_leiden", reduction.use = "umap_harmony", split.by = "clusters_harmony_leiden", size = 0.1)
+
+```
+
+Find markers for these clusters
+
+```{r}
+Idents(srt) <- "clusters_harmony_leiden"
+markers <- FindAllMarkers(srt, only.pos = T, max.cells.per.ident = 1000)
+```
+
+
+```{r}
+table(srt$clusters_harmony_leiden, srt$genevector)
+```
+
+Plot top cluster markers
+
+```{r}
+# source("~/work/repos/meso/R/dotplot_fixed.R")
+```
+
+```{r, fig.width = 10, fig.height=5}
+markers_plot <- markers %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 4) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+
+Idents(srt) <- "clusters_harmony_leiden"
+
+feature_dotplot <- DotPlot(srt, features = to_plot, assay = "RNA", scale = T, cluster.idents = F, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+Load liftover
+
+```{r}
+lift <- read.table(here("Azimuth", "squamous_lungref_azimuth_refmapped.txt"), header = T, sep = "\t")
+
+rownames(lift) <- lift$cell_id
+
+lift <- lift[colnames(srt),]
+
+srt <- AddMetaData(srt, lift)
+```
+
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, split.by = "clusters_harmony_leiden", reduction.use = "umap_harmony", var = "predicted.ann_level_2", size = 0.1, do.label = T, labels.size = 2)
+```
+
+
+
+```{r}
+DotPlot(srt, features = c("CD4", "CD8A", "TP63"), assay = "RNA", scale = T, cluster.idents = T, group.by = "clusters_harmony_leiden", col.min = 0) + guides(x = guide_axis(angle = 90))
+```
+
+
+
+Assign cell identities
+
+```{r}
+coarse_cluster_map_rna <- c(
+  "1" = "T-Cell",
+  "2" = "T-Cell (NK+CD8)",
+  "3" = "B-Cell",
+  "4" = "Epithelial (Basal+)",
+  "5" = "Macrophage",
+  "6" = "Fibroblast",
+  "7" = "T-Cell (MT-hi)",
+  "8" = "Epithelial (AT2+)",
+  "9" = "Plasma",
+  "10" = "Mast cell",
+  "11" = "T-Cell (Ki67hi)",
+  "12" = "Endothelial",
+  "13" = "pDCs"
+)
+srt@meta.data$cell_type_coarse <- coarse_cluster_map_rna[match(srt@meta.data$clusters_harmony_leiden, names(coarse_cluster_map_rna))]
+
+srt$cell_type_coarse <- factor(srt$cell_type_coarse, levels = sort(unique(srt$cell_type_coarse)))
+```
+
+
+
+```{r, fig.width=13, fig.height=8}
+p1 <- DimPlot(srt, cols = dittoColors(), reduction = "umap_harmony", label = T, label.box = T, label.size = 3)
+p2 <- DimPlot(srt, cols = dittoColors(), reduction = "umap_harmony", label = F, label.box = T, label.size = 3)
+
+
+markers_plot <- markers %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 4) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+Idents(srt) <- "cell_type_coarse"
+
+feature_dotplot <- DotPlot(srt, features = to_plot, assay = "RNA", scale = T, cluster.idents = T, group.by = "cell_type_coarse", col.min = 0) + guides(x = guide_axis(angle = 90))
+p3 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+
+pcomb <- (p1 | p2) / p3
+pcomb
+```
+
+
+```{r, fig.width=15, fig.height=5}
+custom_markers <- list(
+  "Epithelial" = c("KRT7", "PIGR", "ELF3", "CYB5A", "KRT8", "KRT19", "TACSTD2", "MUC1", "S100A14", "CXCL17"),
+  "Basal" = c("KRT5", "TP63", "S100A2", "KRT6A", "TNS4"),
+  "AT1" = c("AGER", "RTKN2", "CLIC5"),
+  "AT2" = c("SFTPC", "SFTPA1", "SFTPA2"),
+  # "Ciliated" = c("GSTA1", "DTHD1", "PIFO", "FOXJ1", "CCDC78"),
+  # "Neuroendrocrine" = c("CHGA", "CALCA", "ASCL1", "CHGB", "GRP", "BEX1"),
+  "B-Cell" = c("MS4A1", "PAX5", "CD79A"),
+  "Plasma" = c("JCHAIN", "IGKC", "IGHA1", "IGHG1", "MZB1", "ISG20"),
+  "T-Cell" = c("IL7R", "CD3E", "CD3D"),
+  "Endothelial" = c("VWF", "FLT1"),
+  "Lymphatic EC" = c("MMRN1", "CCL21"),
+  "Mast cell" = c("KIT", "CPA3"),
+  "Fibroblast" = c("COL1A1", "DCN"),
+  "Pericyte" = c("PDGFRB", "CALD1"),
+  "Cycling cells" = c("TOP2A", "CENPF", "CENPP", "ASPM"),
+  "PDC" = c("IL3RA", "TCF4", "LTB", "GZMB", "ITM2C", "IRF8", "PLD4", "IRF7")
+)
+
+feature_dotplot <- DotPlot(srt, features = custom_markers, assay = "RNA", scale = T, cluster.idents = F, group.by = "cell_type_coarse", col.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, var = "cell_type_coarse", reduction.use = "umap_harmony", split.by = "cell_type_coarse", size = 0.1)
+```
+
+
+On the original unbatch corrected umap
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, split.by = "clusters_harmony_leiden", reduction.use = "umap", var = "cell_type_coarse", size = 0.1, do.label = T, labels.size = 2)
+```
+## Add tumor cell calls
+
+```{r}
+tumor_calls <- read.table(here("cnv", "infercnv", "infercnv_results.txt.gz"), header = T, sep = "\t") %>%
+  column_to_rownames("cell_id")
+tumor_calls$patient <- tumor_calls$cell_type <- NULL
+
+
+srt <- AddMetaData(srt, tumor_calls)
+
+# Remove NAs
+srt <- srt[,!is.na(srt$is_tumor_cell)]
+```
+
+```{r}
+table(srt$is_tumor_cell, srt$cell_type_coarse)
+```
+
+Clean the calls by removing any non epithelial cell called as tumor
+
+```{r, fig.height=12, fig.width=12}
+srt <- srt[,!(srt$is_tumor_cell == TRUE & !grepl("Epithelial", srt$cell_type_coarse, ignore.case = T))]
+```
+
+
+```{r}
+table(srt$is_tumor_cell, srt$cell_type_coarse)
+```
+
+```{r}
+dittoDimPlot(srt, split.by = "is_tumor_cell", reduction.use = "umap", var = "cell_type_coarse", size = 0.1, do.label = F, labels.size = 2)
+```
+
+Update the cell types and reperform marker calling
+
+```{r}
+srt$cell_type_coarse_cancer <- as.character(srt$cell_type_coarse)
+
+srt$cell_type_coarse_cancer[srt$is_tumor_cell == T] <- "Cancer"
+```
+
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, split.by = "cell_type_coarse_cancer", reduction.use = "umap", var = "cell_type_coarse_cancer", size = 0.1, do.label = F, labels.size = 2)
+```
+
+
+```{r, fig.height=12, fig.width=12}
+dittoDimPlot(srt, split.by = "cell_type_coarse_cancer", reduction.use = "umap_harmony", var = "cell_type_coarse_cancer", size = 0.1, do.label = F, labels.size = 2)
+```
+
+
+```{r}
+Idents(srt) <- "cell_type_coarse_cancer"
+markers2 <- FindAllMarkers(srt, only.pos = T, max.cells.per.ident = 1000)
+```
+
+
+```{r, fig.width=13, fig.height=8}
+p1 <- DimPlot(srt, cols = dittoColors(), reduction = "umap_harmony", label = T, label.box = T, label.size = 3)
+p2 <- DimPlot(srt, cols = dittoColors(), reduction = "umap_harmony", label = F, label.box = T, label.size = 3)
+
+
+markers_plot <- markers2 %>%
+  mutate(fc_dir = sign(avg_log2FC)) %>%
+  group_by(cluster) %>%
+  slice_head(n = 4) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+to_plot <- split(markers_plot$gene, markers_plot$cluster)
+Idents(srt) <- "cell_type_coarse_cancer"
+
+feature_dotplot <- DotPlot(srt, features = to_plot, assay = "RNA", scale = T, cluster.idents = F, group.by = "cell_type_coarse_cancer", col.min = 0) + guides(x = guide_axis(angle = 90))
+p3 <- feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+
+
+pcomb <- (p1 | p2) / p3
+pcomb
+```
+
+## Save out
+
+```{r}
+# Save cluster markers
+cluster_markers <- markers %>%
+  left_join(unique(srt@meta.data[,c("clusters_harmony_leiden", "cell_type_coarse")]), by = c("cluster" = "clusters_harmony_leiden")) %>%
+  relocate(gene, cluster, cell_type_coarse)
+
+write.table(x = cluster_markers, file = "clusters_harmony_leiden_markers.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+
+write.table(x = markers2, file = "clusters_harmony_leiden_markers_cancer.txt", quote = F, sep = "\t", row.names = F, col.names = T)
+
+
+
+# Save seurat object
+# First remove columns from the before times or other extra stuff
+
+srt_bk <- srt
+
+srt@meta.data[,c("n_genes", "n_genes_by_counts", "total_counts", "total_counts_mt", "pct_counts_mt", "index", "clusters_harmony", "genevector_l2", "genevector",  grep("pseudo", colnames(srt@meta.data), ignore.case = T, value = T))] <- NULL
+
+# Reorder columns
+
+srt$sample_id <- str_split(srt$orig.ident, pattern = "_", simplify = T)[,3]
+srt@meta.data <- srt@meta.data %>%
+  relocate(sample_id, cell_id, sample_id_long = orig.ident, cell_type_coarse)
+
+saveRDS(srt, file = "squamous_cohort_celltyped.rds")
+
+# Convert to h5ad and save
+sce <- as.SingleCellExperiment(srt)
+sce$ident <- NULL
+
+adata <- SCE2AnnData(sce, X_name = "logcounts")
+write_h5ad(adata, filename = "squamous_cohort_celltyped.h5ad")
+```
